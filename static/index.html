@@ -703,7 +703,7 @@
         }
         if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
           activeConversationId = wf.conversation_id;
-          document.getElementById('create-status').textContent = '會議完成 — 請於控制台 2 審查結果';
+          document.getElementById('create-status').textContent = '會議完成 — 請於圓桌決議審查結果';
           await loadCouncilResults();
           return;
         }
@@ -771,7 +771,7 @@
             const wf = data.workflow;
             if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
               activeConversationId = wf.conversation_id;
-              document.getElementById('create-status').textContent = '會議完成 — 請於控制台 2 審查結果';
+              document.getElementById('create-status').textContent = '會議完成 — 請於圓桌決議審查結果';
               loadCouncilResults();
             } else if (wf.state === 'FAILED') {
               document.getElementById('create-status').textContent = '會議失敗: ' + (wf.reason || '');
