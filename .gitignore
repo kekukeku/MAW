@@ -12,3 +12,7 @@ wheels/
 # macOS files
 .DS_Store
 
+# MAW runtime data
+data/
+.env
+

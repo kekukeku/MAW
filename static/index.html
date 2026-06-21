@@ -1,1067 +1,371 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MAW 決策會議匯出控制台</title>
-  <!-- Google Fonts: Outfit & Inter -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <!-- Marked.js for Markdown Rendering -->
+  <title>MAW Autonomous Workflow Engine</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <!-- FontAwesome for Icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  
   <style>
     :root {
-      --bg-primary: #0b0f19;
-      --bg-secondary: rgba(22, 30, 49, 0.7);
-      --bg-tertiary: rgba(30, 41, 67, 0.5);
-      --border-color: rgba(255, 255, 255, 0.08);
-      --accent-color: #4f46e5;
-      --accent-hover: #6366f1;
-      --accent-glow: rgba(79, 70, 229, 0.4);
-      --text-main: #f3f4f6;
-      --text-muted: #9ca3af;
-      --success-color: #10b981;
-      --warning-color: #f59e0b;
-      --error-color: #ef4444;
-      --card-blur: blur(12px);
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      font-family: 'Inter', "PingFang TC", "Heiti TC", "Microsoft JhengHei", sans-serif;
-      background-color: var(--bg-primary);
-      color: var(--text-main);
-      height: 100vh;
-      overflow: hidden;
-      display: flex;
-      background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
-                        radial-gradient(circle at 90% 80%, rgba(79, 70, 229, 0.08) 0%, transparent 50%);
-    }
-
-    /* App Layout */
-    .app-container {
-      display: flex;
-      width: 100%;
-      height: 100vh;
-    }
-
-    /* Sidebar */
-    .sidebar {
-      width: 320px;
-      background-color: var(--bg-secondary);
-      border-right: 1px solid var(--border-color);
-      backdrop-filter: var(--card-blur);
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
-
-    .sidebar-header {
-      padding: 24px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .sidebar-header i {
-      font-size: 24px;
-      color: var(--accent-color);
-      text-shadow: 0 0 10px var(--accent-glow);
-    }
-
-    .sidebar-header h1 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-    }
-
-    .conversation-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px;
-    }
-
-    .conversation-item {
-      padding: 14px 16px;
-      border-radius: 12px;
-      cursor: pointer;
-      margin-bottom: 8px;
-      transition: all 0.2s ease;
-      border: 1px solid transparent;
-    }
-
-    .conversation-item:hover {
-      background-color: var(--bg-tertiary);
-    }
-
-    .conversation-item.active {
-      background-color: rgba(79, 70, 229, 0.15);
-      border-color: rgba(79, 70, 229, 0.3);
-    }
-
-    .conv-title {
-      font-weight: 500;
-      font-size: 14px;
-      margin-bottom: 6px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .conv-meta {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    .conv-badge {
-      background: var(--accent-color);
-      color: #fff;
-      padding: 1px 6px;
-      border-radius: 10px;
-      font-size: 10px;
-    }
-
-    /* Main Console */
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      background-color: rgba(10, 15, 27, 0.3);
-    }
-
-    .main-header {
-      height: 73px;
-      padding: 0 24px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      backdrop-filter: var(--card-blur);
-      background-color: rgba(22, 30, 49, 0.2);
-    }
-
-    .header-info h2 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 18px;
-      font-weight: 600;
-    }
-
-    .header-info p {
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .header-actions {
-      display: flex;
-      gap: 12px;
-    }
-
-    .btn {
-      padding: 10px 18px;
-      border-radius: 10px;
-      font-weight: 500;
-      font-size: 13px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      transition: all 0.2s ease;
-      border: 1px solid transparent;
-    }
-
-    .btn-primary {
-      background-color: var(--accent-color);
-      color: #fff;
-      box-shadow: 0 4px 12px var(--accent-glow);
-    }
-
-    .btn-primary:hover {
-      background-color: var(--accent-hover);
-      box-shadow: 0 6px 16px var(--accent-glow);
-    }
-
-    .btn-secondary {
-      background-color: rgba(255, 255, 255, 0.05);
-      border-color: var(--border-color);
-      color: var(--text-main);
-    }
-
-    .btn-secondary:hover {
-      background-color: rgba(255, 255, 255, 0.1);
-    }
-
-    /* Message Area */
-    .message-pane {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }
-
-    .welcome-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      color: var(--text-muted);
-      gap: 16px;
-    }
-
-    .welcome-state i {
-      font-size: 64px;
-      color: var(--bg-tertiary);
-    }
-
-    .chat-bubble {
-      max-width: 85%;
-      border-radius: 16px;
-      padding: 20px;
-      line-height: 1.6;
-      font-size: 14px;
-    }
-
-    .chat-bubble-user {
-      align-self: flex-end;
-      background-color: var(--accent-color);
-      color: #fff;
-      border-bottom-right-radius: 4px;
-      box-shadow: 0 4px 15px rgba(79, 70, 229, 0.2);
-    }
-
-    .chat-bubble-assistant {
-      align-self: flex-start;
-      background-color: var(--bg-secondary);
-      border-bottom-left-radius: 4px;
-      border: 1px solid var(--border-color);
-      backdrop-filter: var(--card-blur);
-      width: 100%;
-      max-width: 95%;
-    }
-
-    .msg-header {
-      font-family: 'Outfit', sans-serif;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-bottom: 12px;
-      font-size: 12px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    /* Council Stages UI */
-    .stage-section {
-      margin-top: 16px;
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      overflow: hidden;
-      background-color: rgba(10, 15, 27, 0.2);
-    }
-
-    .stage-header {
-      padding: 12px 18px;
-      background-color: rgba(255, 255, 255, 0.02);
-      border-bottom: 1px solid var(--border-color);
-      font-weight: 600;
-      font-size: 13px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      cursor: pointer;
-    }
-
-    .stage-content {
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .stage-tabs {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-      border-bottom: 1px solid var(--border-color);
-      padding-bottom: 8px;
-      overflow-x: auto;
-    }
-
-    .stage-tab {
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      background-color: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--border-color);
-      transition: all 0.2s ease;
-      white-space: nowrap;
-    }
-
-    .stage-tab.active {
-      background-color: var(--accent-color);
-      border-color: var(--accent-color);
-      color: #fff;
-    }
-
-    .stage-response-panel {
-      font-size: 13px;
-      line-height: 1.6;
-      max-height: 250px;
-      overflow-y: auto;
-      background-color: rgba(0, 0, 0, 0.2);
-      padding: 14px;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.03);
-    }
-
-    /* Stage 3 Synthesis styling */
-    .synthesis-pane {
-      background-image: linear-gradient(135deg, rgba(79, 70, 229, 0.05) 0%, transparent 100%);
-      border-left: 4px solid var(--accent-color) !important;
-    }
-
-    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
-      margin-top: 16px;
-      margin-bottom: 8px;
-      font-family: 'Outfit', sans-serif;
-      font-weight: 600;
-    }
-    
-    .markdown-body h1 { font-size: 18px; }
-    .markdown-body h2 { font-size: 16px; }
-    .markdown-body h3 { font-size: 14px; }
-
-    .markdown-body p {
-      margin-bottom: 12px;
-    }
-
-    .markdown-body pre {
-      background-color: rgba(0,0,0,0.3);
-      padding: 12px;
-      border-radius: 8px;
-      overflow-x: auto;
-      margin-bottom: 12px;
-      border: 1px solid rgba(255,255,255,0.05);
-      font-family: monospace;
-      font-size: 12px;
-    }
-
-    .markdown-body code {
-      font-family: monospace;
-      background-color: rgba(255,255,255,0.08);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 12px;
-    }
-
-    .markdown-body ul, .markdown-body ol {
-      margin-left: 20px;
-      margin-bottom: 12px;
-    }
-
-    /* Modal Styling */
-    .modal-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: rgba(5, 8, 16, 0.85);
-      backdrop-filter: blur(8px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.3s ease;
-    }
-
-    .modal-overlay.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .modal-container {
-      width: 580px;
-      max-width: 90%;
-      background-color: #121829;
-      border: 1px solid var(--border-color);
-      border-radius: 20px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 100px rgba(79, 70, 229, 0.1);
-      backdrop-filter: var(--card-blur);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      transform: scale(0.95);
-      transition: transform 0.3s ease;
-    }
-
-    .modal-overlay.active .modal-container {
-      transform: scale(1);
-    }
-
-    .modal-header {
-      padding: 20px 24px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .modal-header h3 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 18px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .modal-header h3 i {
-      color: var(--accent-color);
-    }
-
-    .close-modal {
-      cursor: pointer;
-      color: var(--text-muted);
-      font-size: 18px;
-      transition: color 0.2s ease;
-    }
-
-    .close-modal:hover {
-      color: var(--text-main);
-    }
-
-    .modal-body {
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-      max-height: 70vh;
-      overflow-y: auto;
-    }
-
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .form-group label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .form-control {
-      background-color: rgba(0, 0, 0, 0.25);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 10px 14px;
-      color: var(--text-main);
-      font-family: inherit;
-      font-size: 13.5px;
-      outline: none;
-      transition: all 0.2s ease;
-      width: 100%;
-    }
-
-    .form-control:focus {
-      border-color: var(--accent-color);
-      box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
-    }
-
-    select.form-control {
-      appearance: none;
-      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
-      background-repeat: no-repeat;
-      background-position: right 14px center;
-      background-size: 16px;
-      padding-right: 40px;
-    }
-
-    .repo-path-display {
-      font-family: monospace;
-      font-size: 11px;
-      color: var(--text-muted);
-      background-color: rgba(255, 255, 255, 0.02);
-      padding: 6px 10px;
-      border-radius: 6px;
-      word-break: break-all;
-      border: 1px dashed var(--border-color);
-    }
-
-    .modal-footer {
-      padding: 16px 24px;
-      border-top: 1px solid var(--border-color);
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
-      background-color: rgba(0, 0, 0, 0.1);
-    }
-
-    /* Success / Result Block */
-    .result-block {
-      background-color: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.2);
-      border-radius: 12px;
-      padding: 18px;
-      margin-top: 16px;
-    }
-
-    .result-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--success-color);
-      font-weight: 600;
-      font-size: 14px;
-      margin-bottom: 12px;
-    }
-
-    .result-grid {
-      display: grid;
-      grid-template-columns: 100px 1fr;
-      gap: 8px 16px;
-      font-size: 12.5px;
-      margin-bottom: 14px;
-    }
-
-    .result-label {
-      color: var(--text-muted);
-      font-weight: 500;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-
-    .badge-success {
-      background-color: rgba(16, 185, 129, 0.15);
-      color: var(--success-color);
-    }
-
-    .badge-warning {
-      background-color: rgba(245, 158, 11, 0.15);
-      color: var(--warning-color);
-    }
-
-    .manual-command-box {
-      background-color: #050810;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 12px;
-      position: relative;
-    }
-
-    .manual-command-box pre {
-      font-family: monospace;
-      font-size: 11.5px;
-      white-space: pre-wrap;
-      word-break: break-all;
-      color: #38bdf8;
-      margin-right: 32px;
-    }
-
-    .copy-btn {
-      position: absolute;
-      top: 10px;
-      right: 12px;
-      cursor: pointer;
-      color: var(--text-muted);
-      transition: color 0.2s ease;
-      font-size: 14px;
-    }
-
-    .copy-btn:hover {
-      color: var(--text-main);
-    }
+      --bg: #0b0f19; --panel: #121829; --border: rgba(255,255,255,0.08);
+      --accent: #6366f1; --accent2: #4f46e5; --text: #f3f4f6; --muted: #9ca3af;
+      --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Inter, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .layout { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr auto; gap: 12px; padding: 16px; height: 100vh; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; overflow: auto; }
+    .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px; }
+    .full-width { grid-column: 1 / -1; }
+    textarea, select, input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; }
+    textarea { min-height: 100px; resize: vertical; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-danger { background: var(--err); color: #fff; }
+    .btn-secondary { background: rgba(255,255,255,0.08); color: var(--text); }
+    .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 120px; overflow: auto; }
+    .model-grid label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+    .pipeline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; }
+    .node { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); transition: all 0.3s; }
+    .node.active { background: rgba(99,102,241,0.2); border-color: var(--accent); color: #fff; animation: pulse 1.5s infinite; }
+    .node.done { background: rgba(16,185,129,0.15); border-color: var(--ok); color: var(--ok); }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); } 50% { box-shadow: 0 0 12px 4px rgba(99,102,241,0.3); } }
+    .arrow { color: var(--muted); }
+    #terminal { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #050810; border-radius: 8px; padding: 12px; height: 200px; overflow-y: auto; white-space: pre-wrap; color: #a5f3fc; }
+    .stage-block { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 13px; }
+    .stage-block h3 { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; z-index: 100; }
+    .modal.open { display: flex; }
+    .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 520px; max-width: 90vw; }
+    .modal-box h3 { margin-bottom: 16px; }
+    .report-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 13px; margin-bottom: 8px; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .status-running { background: rgba(99,102,241,0.2); color: var(--accent); }
+    .status-failed { background: rgba(239,68,68,0.2); color: var(--err); }
+    .status-done { background: rgba(16,185,129,0.2); color: var(--ok); }
   </style>
 </head>
 <body>
-
-  <div class="app-container">
-    <!-- Sidebar -->
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <i class="fa-solid fa-network-wired"></i>
-        <h1>MAW 匯出調配器</h1>
+  <div class="layout">
+    <!-- Panel 1: Council Creation -->
+    <div class="panel" id="panel-create">
+      <h2>Panel 1 — Council Creation</h2>
+      <label>Task Prompt</label>
+      <textarea id="prompt" placeholder="Describe what you want the council to plan..."></textarea>
+      <label>Target Project</label>
+      <select id="target-key"></select>
+      <label>Council Members</label>
+      <div class="model-grid" id="council-models"></div>
+      <label>Chairman Model</label>
+      <select id="chairman-model"></select>
+      <label>Review Mode</label>
+      <select id="review-mode">
+        <option value="AI">AI Review</option>
+        <option value="Human">Human Review</option>
+        <option value="None">None (skip review)</option>
+      </select>
+      <label>Max AI Review Iterations (0-5)</label>
+      <input type="number" id="max-iterations" min="0" max="5" value="3">
+      <label><input type="checkbox" id="allow-changes" checked> Allow REQUEST_CHANGES loop</label>
+      <label><input type="checkbox" id="require-commit" checked> Require pre-commit approval</label>
+      <label><input type="checkbox" id="mock-mode"> Use mock council (no API cost)</label>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="startCouncil()">Start Council</button>
       </div>
-      <div class="conversation-list" id="conv-list">
-        <!-- 側邊欄列表，動態載入 -->
+      <p id="create-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
+    </div>
+
+    <!-- Panel 2: Council Result Review -->
+    <div class="panel" id="panel-council">
+      <h2>Panel 2 — Council Result Review</h2>
+      <div id="council-results"><p style="color:var(--muted)">Run a council to see results.</p></div>
+      <div class="actions" id="council-actions" style="display:none">
+        <button class="btn btn-primary" onclick="approveCouncil()">Approve Plan</button>
+        <button class="btn btn-danger" onclick="rejectCouncil()">Reject</button>
       </div>
     </div>
 
-    <!-- Main Workspace -->
-    <div class="main-content">
-      <div class="main-header">
-        <div class="header-info">
-          <h2 id="current-title">選擇一個會議紀錄</h2>
-          <p id="current-meta">從側邊欄選擇一個規劃會議以進行審查與匯出</p>
-        </div>
+    <!-- Panel 3: Workflow Pipeline Tracker -->
+    <div class="panel full-width" id="panel-pipeline">
+      <h2>Panel 3 — Workflow Pipeline</h2>
+      <div class="pipeline" id="pipeline">
+        <span class="node" data-state="COUNCIL_RUNNING">Council</span><span class="arrow">→</span>
+        <span class="node" data-state="EXPORTED">Export</span><span class="arrow">→</span>
+        <span class="node" data-state="EXECUTOR_RUNNING">Executor</span><span class="arrow">→</span>
+        <span class="node" data-state="REVIEW_RUNNING">Review</span><span class="arrow">→</span>
+        <span class="node" data-state="FIX_LOOP">Fix Loop</span><span class="arrow">→</span>
+        <span class="node" data-state="COMMIT_PENDING_APPROVAL">Commit Approval</span><span class="arrow">→</span>
+        <span class="node" data-state="COMPLETED">Done</span>
       </div>
+      <p>State: <span id="workflow-state" class="status-badge status-running">IDLE</span>
+         Task: <span id="task-num">—</span></p>
+      <div class="actions" id="human-review-actions" style="display:none">
+        <span style="font-size:12px;color:var(--muted);margin-right:8px;">Human review:</span>
+        <button class="btn btn-primary" onclick="submitHumanReview('APPROVE')">Approve</button>
+        <button class="btn btn-secondary" onclick="submitHumanReview('REQUEST_CHANGES')">Request Changes</button>
+        <button class="btn btn-danger" onclick="submitHumanReview('REJECT')">Reject</button>
+      </div>
+    </div>
 
-      <div class="message-pane" id="message-pane">
-        <!-- 歡迎畫面 -->
-        <div class="welcome-state">
-          <i class="fa-solid fa-comments-dollar"></i>
-          <h3>MAW 決策會議匯出調配器主控台</h3>
-          <p>請從側邊欄選擇一個規劃會議來審查主席綜合計劃。</p>
-        </div>
-      </div>
+    <!-- Panel 4: Real-Time Log Terminal -->
+    <div class="panel full-width" id="panel-logs">
+      <h2>Panel 4 — Real-Time Logs</h2>
+      <div id="terminal"></div>
     </div>
   </div>
 
-  <!-- Export Modal -->
-  <div class="modal-overlay" id="export-modal">
-    <div class="modal-container">
-      <div class="modal-header">
-        <h3><i class="fa-solid fa-circle-arrow-up"></i> 匯出任務至執行者</h3>
-        <i class="fa-solid fa-xmark close-modal" onclick="closeExportModal()"></i>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label>目標工作區專案</label>
-          <select class="form-control" id="target-project" onchange="handleTargetChange()">
-            <!-- 動態載入專案 -->
-          </select>
-          <div class="repo-path-display" id="target-path">正在解析目標路徑...</div>
-        </div>
-
-        <div class="form-group">
-          <label>任務標題</label>
-          <input type="text" class="form-control" id="task-title" placeholder="預設使用會議標題">
-        </div>
-
-        <div class="form-group">
-          <label>任務優先級</label>
-          <select class="form-control" id="task-priority">
-            <option value="HIGH">高 (HIGH)</option>
-            <option value="MEDIUM" selected>中 (MEDIUM)</option>
-            <option value="LOW">低 (LOW)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>受影響檔案</label>
-          <textarea class="form-control" id="files-affected" rows="2">To be determined by executor after repository inspection</textarea>
-        </div>
-
-        <div class="form-group">
-          <label>非目標 / 特別說明</label>
-          <textarea class="form-control" id="non-goals" rows="2">None specified.</textarea>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeExportModal()">取消</button>
-        <button class="btn btn-primary" id="confirm-export-btn" onclick="submitExport()">確認並匯出</button>
+  <!-- Panel 5: Pre-Commit Report Modal -->
+  <div class="modal" id="commit-modal">
+    <div class="modal-box">
+      <h3>Panel 5 — Pre-Commit Report</h3>
+      <div id="commit-report"></div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="approveCommit()">Approve Commit</button>
+        <button class="btn btn-secondary" onclick="requestChanges()">Request Changes</button>
+        <button class="btn btn-danger" onclick="cancelWorkflow()">Cancel</button>
       </div>
     </div>
   </div>
 
   <script>
-    const API_BASE = 'http://localhost:8002';
-    let conversations = [];
-    let activeConversation = null;
-    let targets = [];
-    let exportTargetMsg = null;
+    const API = window.location.origin;
+    let config = {}, targets = [], activeConversationId = null, activeTaskNum = null;
+    let activeWorkflowId = null, ws = null, lastLogCount = 0, currentWorkflow = null;
 
-    // 載入初始資料
-    window.addEventListener('DOMContentLoaded', () => {
-      loadConversations();
-      loadTargets();
-    });
+    const STATE_MAP = {
+      IDLE: 'COUNCIL_RUNNING', COUNCIL_RUNNING: 'COUNCIL_RUNNING',
+      COUNCIL_PENDING_APPROVAL: 'COUNCIL_RUNNING',
+      EXPORTED: 'EXPORTED', EXECUTOR_RUNNING: 'EXECUTOR_RUNNING',
+      REVIEW_PENDING: 'REVIEW_RUNNING', REVIEW_RUNNING: 'REVIEW_RUNNING',
+      REVIEW_DECISION_PENDING: 'REVIEW_RUNNING',
+      COMMIT_PENDING_APPROVAL: 'COMMIT_PENDING_APPROVAL', COMMITTING: 'COMMIT_PENDING_APPROVAL',
+      COMPLETED: 'COMPLETED', FINAL_REPORT_PRESENTED: 'COMPLETED',
+    };
 
-    async function loadConversations() {
-      try {
-        const response = await fetch(`${API_BASE}/api/maw/conversations`);
-        conversations = await response.json();
-        renderConversationList();
-      } catch (e) {
-        console.error("載入對話失敗:", e);
-      }
+    async function init() {
+      const [cfgRes, tgtRes] = await Promise.all([
+        fetch(`${API}/api/maw/config`), fetch(`${API}/api/maw/targets`)
+      ]);
+      config = await cfgRes.json();
+      const tgtData = await tgtRes.json();
+      targets = tgtData.projects;
+      renderModels();
+      renderTargets();
+      document.getElementById('mock-mode').checked = !!config.mockMode;
     }
 
-    async function loadTargets() {
-      try {
-        const response = await fetch(`${API_BASE}/api/maw/targets`);
-        const data = await response.json();
-        targets = data.projects;
-        renderTargetOptions();
-      } catch (e) {
-        console.error("載入目標專案失敗:", e);
-      }
-    }
-
-    function renderConversationList() {
-      const listEl = document.getElementById('conv-list');
-      listEl.innerHTML = '';
-      
-      if (conversations.length === 0) {
-        listEl.innerHTML = '<p style="text-align:center;color:var(--text-muted);font-size:12px;margin-top:20px;">未找到任何會議紀錄。</p>';
-        return;
-      }
-
-      conversations.forEach(conv => {
-        const item = document.createElement('div');
-        item.className = `conversation-item ${activeConversation?.id === conv.id ? 'active' : ''}`;
-        item.onclick = () => selectConversation(conv.id);
-
-        const date = new Date(conv.created_at).toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-
-        item.innerHTML = `
-          <div class="conv-title" title="${conv.title}">${conv.title}</div>
-          <div class="conv-meta">
-            <span>${date}</span>
-            ${conv.exportable_count > 0 ? `<span class="conv-badge">${conv.exportable_count} 個計劃</span>` : ''}
-          </div>
-        `;
-        listEl.appendChild(item);
+    function renderModels() {
+      const grid = document.getElementById('council-models');
+      const chair = document.getElementById('chairman-model');
+      grid.innerHTML = '';
+      chair.innerHTML = '';
+      (config.availableModels || []).forEach(m => {
+        const checked = (config.defaultCouncilModels || []).includes(m) ? 'checked' : '';
+        grid.innerHTML += `<label><input type="checkbox" value="${m}" ${checked}> ${m.split('/').pop()}</label>`;
+        chair.innerHTML += `<option value="${m}" ${m === config.defaultChairmanModel ? 'selected' : ''}>${m}</option>`;
       });
     }
 
-    async function selectConversation(id) {
-      try {
-        const response = await fetch(`${API_BASE}/api/maw/conversations/${id}`);
-        activeConversation = await response.json();
-        
-        // 更新選取高亮
-        renderConversationList();
-
-        // 更新標頭詳情
-        document.getElementById('current-title').innerText = activeConversation.title;
-        document.getElementById('current-meta').innerText = `ID: ${activeConversation.id} | 建立時間: ${new Date(activeConversation.created_at).toLocaleString()}`;
-        
-        renderMessages();
-      } catch (e) {
-        console.error("獲取會議詳情失敗:", e);
-      }
+    function renderTargets() {
+      const sel = document.getElementById('target-key');
+      sel.innerHTML = targets.map(t => `<option value="${t.key}" ${!t.valid ? 'disabled' : ''}>${t.name}${t.valid ? '' : ' (invalid)'}</option>`).join('');
     }
 
-    function renderMessages() {
-      const pane = document.getElementById('message-pane');
-      pane.innerHTML = '';
-
-      if (!activeConversation || activeConversation.messages.length === 0) {
-        pane.innerHTML = '<div class="welcome-state"><i class="fa-solid fa-face-smile"></i><h3>無任何訊息。</h3></div>';
-        return;
-      }
-
-      activeConversation.messages.forEach((msg, idx) => {
-        const bubble = document.createElement('div');
-        
-        if (msg.role === 'user') {
-          bubble.className = 'chat-bubble chat-bubble-user';
-          bubble.innerHTML = `
-            <div class="msg-header" style="color: rgba(255,255,255,0.7);"><i class="fa-solid fa-user"></i> 您</div>
-            <div class="markdown-body">${marked.parse(msg.content)}</div>
-          `;
-        } else {
-          bubble.className = 'chat-bubble chat-bubble-assistant';
-          
-          let stagesHtml = '';
-          
-          // 階段 1
-          if (msg.stage1) {
-            stagesHtml += `
-              <div class="stage-section">
-                <div class="stage-header" onclick="toggleAccordion('s1-${idx}')">
-                  <span>階段一：收集各模型獨立回覆</span>
-                  <i class="fa-solid fa-chevron-down" id="arrow-s1-${idx}"></i>
-                </div>
-                <div class="stage-content" id="s1-${idx}" style="display:none;">
-                  <div class="stage-tabs" id="tabs-s1-${idx}">
-                    ${msg.stage1.map((r, rIdx) => `
-                      <span class="stage-tab ${rIdx === 0 ? 'active' : ''}" onclick="selectTab('s1-${idx}', ${rIdx})">
-                        ${r.model.split('/').pop()}
-                      </span>
-                    `).join('')}
-                  </div>
-                  ${msg.stage1.map((r, rIdx) => `
-                    <div class="stage-response-panel s1-${idx}-panel" id="panel-s1-${idx}-${rIdx}" style="display: ${rIdx === 0 ? 'block' : 'none'};">
-                      ${marked.parse(r.response)}
-                    </div>
-                  `).join('')}
-                </div>
-              </div>
-            `;
-          }
-
-          // 階段 2
-          if (msg.stage2) {
-            stagesHtml += `
-              <div class="stage-section">
-                <div class="stage-header" onclick="toggleAccordion('s2-${idx}')">
-                  <span>階段二：同行評估與排序</span>
-                  <i class="fa-solid fa-chevron-down" id="arrow-s2-${idx}"></i>
-                </div>
-                <div class="stage-content" id="s2-${idx}" style="display:none;">
-                  <div class="stage-tabs" id="tabs-s2-${idx}">
-                    ${msg.stage2.map((r, rIdx) => `
-                      <span class="stage-tab ${rIdx === 0 ? 'active' : ''}" onclick="selectTab('s2-${idx}', ${rIdx})">
-                        ${r.model.split('/').pop()}
-                      </span>
-                    `).join('')}
-                  </div>
-                  ${msg.stage2.map((r, rIdx) => `
-                    <div class="stage-response-panel s2-${idx}-panel" id="panel-s2-${idx}-${rIdx}" style="display: ${rIdx === 0 ? 'block' : 'none'};">
-                      ${marked.parse(r.ranking)}
-                    </div>
-                  `).join('')}
-                </div>
-              </div>
-            `;
-          }
-
-          // 階段 3
-          if (msg.stage3) {
-            stagesHtml += `
-              <div class="stage-section synthesis-pane" style="margin-top: 20px;">
-                <div class="stage-header" style="background-color: rgba(79, 70, 229, 0.08); border-bottom-color: rgba(79, 70, 229, 0.15);">
-                  <span>階段三：主席綜合（最終計劃）</span>
-                  <span style="font-size: 11px; background-color: var(--accent-color); padding: 2px 8px; border-radius: 12px; color: #fff;">
-                    ${msg.stage3.model.split('/').pop()}
-                  </span>
-                </div>
-                <div class="stage-content">
-                  <div class="markdown-body">${marked.parse(msg.stage3.response)}</div>
-                  
-                  <div style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 16px; display:flex; justify-content:flex-end;">
-                    <button class="btn btn-primary" onclick="openExportModal(${idx})">
-                      <i class="fa-solid fa-circle-nodes"></i> 🚀 派工至執行者 (MAW)
-                    </button>
-                  </div>
-                  
-                  <!-- 成功報表容器 -->
-                  <div id="export-result-${idx}" style="display:none;"></div>
-                </div>
-              </div>
-            `;
-          }
-
-          bubble.innerHTML = `
-            <div class="msg-header"><i class="fa-solid fa-building-columns"></i> LLM 決策會議</div>
-            ${stagesHtml}
-          `;
-        }
-        
-        pane.appendChild(bubble);
-      });
-
-      // 滾動到最下方
-      pane.scrollTop = pane.scrollHeight;
+    function selectedModels() {
+      return [...document.querySelectorAll('#council-models input:checked')].map(c => c.value);
     }
 
-    // 折疊面板開關
-    window.toggleAccordion = function(id) {
-      const el = document.getElementById(id);
-      const arrow = document.getElementById(`arrow-${id}`);
-      if (el.style.display === 'none') {
-        el.style.display = 'flex';
-        arrow.className = 'fa-solid fa-chevron-up';
-      } else {
-        el.style.display = 'none';
-        arrow.className = 'fa-solid fa-chevron-down';
-      }
-    };
-
-    // 頁籤切換
-    window.selectTab = function(stageId, index) {
-      const tabsContainer = document.getElementById(`tabs-${stageId}`);
-      Array.from(tabsContainer.children).forEach((tab, tIdx) => {
-        if (tIdx === index) tab.classList.add('active');
-        else tab.classList.remove('active');
-      });
-
-      const panels = document.getElementsByClassName(`${stageId}-panel`);
-      Array.from(panels).forEach((panel, pIdx) => {
-        if (pIdx === index) panel.style.display = 'block';
-        else panel.style.display = 'none';
-      });
-    };
-
-    // 渲染專案下拉選單選項
-    function renderTargetOptions() {
-      const select = document.getElementById('target-project');
-      select.innerHTML = '';
-      
-      if (targets.length === 0) {
-        select.innerHTML = '<option value="">未設定任何有效專案</option>';
-        return;
-      }
-
-      targets.forEach(target => {
-        const option = document.createElement('option');
-        option.value = target.key;
-        option.innerText = `${target.name} (${target.key})`;
-        if (target.key === 'pad') option.selected = true;
-        select.appendChild(option);
-      });
-
-      handleTargetChange();
-    }
-
-    window.handleTargetChange = function() {
-      const select = document.getElementById('target-project');
-      const selectedKey = select.value;
-      const target = targets.find(t => t.key === selectedKey);
-      
-      const pathEl = document.getElementById('target-path');
-      if (target) {
-        pathEl.innerText = target.path;
-        if (!target.valid) {
-          pathEl.innerHTML += `<br/><span style="color:var(--error-color);font-weight:600;"><i class="fa-solid fa-triangle-exclamation"></i> 無效架構: ${target.issues.join(', ')}</span>`;
-          document.getElementById('confirm-export-btn').disabled = true;
-        } else {
-          document.getElementById('confirm-export-btn').disabled = false;
-        }
-      } else {
-        pathEl.innerText = '未解析到路徑。';
-        document.getElementById('confirm-export-btn').disabled = true;
-      }
-    };
-
-    // 彈窗控制
-    window.openExportModal = function(msgIndex) {
-      exportTargetMsg = msgIndex;
-      document.getElementById('task-title').value = activeConversation.title;
-      document.getElementById('export-modal').classList.add('active');
-    };
-
-    window.closeExportModal = function() {
-      document.getElementById('export-modal').classList.remove('active');
-    };
-
-    // 送出匯出
-    window.submitExport = async function() {
-      if (exportTargetMsg === null) return;
-      
-      const btn = document.getElementById('confirm-export-btn');
-      btn.innerText = '正在匯出...';
-      btn.disabled = true;
-
-      const payload = {
-        conversationId: activeConversation.id,
-        messageIndex: exportTargetMsg,
-        targetKey: document.getElementById('target-project').value,
-        title: document.getElementById('task-title').value,
-        priority: document.getElementById('task-priority').value,
-        filesAffected: document.getElementById('files-affected').value,
-        nonGoals: document.getElementById('non-goals').value
+    async function startCouncil() {
+      const prompt = document.getElementById('prompt').value.trim();
+      if (!prompt) return alert('Enter a prompt');
+      document.getElementById('create-status').textContent = 'Council running...';
+      const body = {
+        prompt, targetKey: document.getElementById('target-key').value,
+        councilModels: selectedModels(),
+        chairmanModel: document.getElementById('chairman-model').value,
+        reviewPolicy: {
+          mode: document.getElementById('review-mode').value,
+          max_iterations: parseInt(document.getElementById('max-iterations').value),
+          allow_request_changes: document.getElementById('allow-changes').checked,
+          require_pre_commit_approval: document.getElementById('require-commit').checked,
+        },
       };
-
-      try {
-        const response = await fetch(`${API_BASE}/api/maw/export`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.detail || '匯出要求失敗。');
-        }
-
-        const result = await response.json();
-        renderExportSuccess(exportTargetMsg, result);
-        closeExportModal();
-        
-      } catch (e) {
-        alert(`匯出失敗: ${e.message}`);
-      } finally {
-        btn.innerText = '確認並匯出';
-        btn.disabled = false;
+      if (document.getElementById('mock-mode').checked) body.mock = true;
+      const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        document.getElementById('create-status').textContent = 'Failed: ' + (err.detail || res.status);
+        return;
       }
-    };
-
-    function renderExportSuccess(msgIndex, data) {
-      const resultEl = document.getElementById(`export-result-${msgIndex}`);
-      resultEl.style.display = 'block';
-
-      const watcherBadge = data.watcherActive 
-        ? `<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> 執行中</span>`
-        : `<span class="badge badge-warning"><i class="fa-solid fa-circle-info"></i> 未啟動</span>`;
-        
-      const statusText = data.watcherActive
-        ? `任務已自動派發給 Antigravity 執行者開始進行實作。`
-        : `未偵測到本機監聽程式。請複製並執行以下手動派工測試指令：`;
-
-      resultEl.innerHTML = `
-        <div class="result-block">
-          <div class="result-header">
-            <i class="fa-solid fa-circle-check"></i> 🎉 任務成功匯出
-          </div>
-          <div class="result-grid">
-            <div class="result-label">任務 ID</div>
-            <div style="font-weight:700; color:#fff;">${data.taskId}</div>
-            
-            <div class="result-label">目標專案</div>
-            <div>${data.targetName}</div>
-            
-            <div class="result-label">本機路徑</div>
-            <div style="font-family:monospace; font-size:11px; word-break:break-all;">${data.taskPath}</div>
-            
-            <div class="result-label">監聽狀態</div>
-            <div>${watcherBadge}</div>
-          </div>
-          
-          <div style="font-size:12.5px; margin-bottom:10px; color:var(--text-main); font-weight:500;">
-            ${statusText}
-          </div>
-          
-          ${!data.watcherActive ? `
-            <div class="manual-command-box">
-              <pre id="cmd-text-${msgIndex}">${data.manualDispatchCommand}</pre>
-              <i class="fa-regular fa-copy copy-btn" onclick="copyCommand('${msgIndex}')" title="複製到剪貼簿"></i>
-            </div>
-          ` : ''}
-        </div>
-      `;
+      const started = await res.json();
+      activeWorkflowId = started.workflow_id;
+      pollForCouncil();
     }
 
-    window.copyCommand = function(index) {
-      const text = document.getElementById(`cmd-text-${index}`).innerText;
-      navigator.clipboard.writeText(text).then(() => {
-        alert("指令已成功複製到剪貼簿！");
-      }).catch(err => {
-        console.error("複製失敗:", err);
+    async function pollForCouncil() {
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const res = await fetch(`${API}/api/maw/workflows/${activeWorkflowId}`);
+        if (!res.ok) continue;
+        const wf = await res.json();
+        if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
+          activeConversationId = wf.conversation_id;
+          document.getElementById('create-status').textContent = 'Council complete — review results';
+          await loadCouncilResults();
+          return;
+        }
+        if (wf.state === 'FAILED') {
+          document.getElementById('create-status').textContent = 'Council failed: ' + (wf.reason || '');
+          return;
+        }
+      }
+    }
+
+    async function loadCouncilResults() {
+      const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}`);
+      const data = await res.json();
+      const conv = data.conversation;
+      const msg = conv.messages.find(m => m.stage3);
+      if (!msg) return;
+      let html = '';
+      if (msg.stage1) {
+        html += '<div class="stage-block"><h3>Stage 1 — Individual Answers</h3>';
+        msg.stage1.forEach(s => { html += `<p><strong>${s.model}</strong></p><div>${marked.parse(s.response)}</div>`; });
+        html += '</div>';
+      }
+      if (msg.stage2) {
+        html += '<div class="stage-block"><h3>Stage 2 — Anonymous Rankings</h3>';
+        msg.stage2.forEach((s, i) => {
+          html += `<p><strong>Evaluator ${i + 1}</strong></p><div>${marked.parse(s.ranking)}</div>`;
+        });
+        html += '</div>';
+      }
+      html += `<div class="stage-block"><h3>Stage 3 — Chairman Synthesis</h3><div>${marked.parse(msg.stage3.response)}</div></div>`;
+      document.getElementById('council-results').innerHTML = html;
+      document.getElementById('council-actions').style.display = 'flex';
+      updatePipeline({ state: 'COUNCIL_PENDING_APPROVAL', review_iterations: 0 });
+    }
+
+    async function approveCouncil() {
+      const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}/approve`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+      const wf = await res.json();
+      activeTaskNum = wf.task_num;
+      lastLogCount = 0;
+      document.getElementById('terminal').textContent = '';
+      document.getElementById('task-num').textContent = activeTaskNum;
+      document.getElementById('council-actions').style.display = 'none';
+      connectWebSocket(activeTaskNum);
+      pollWorkflow();
+    }
+
+    async function rejectCouncil() {
+      await fetch(`${API}/api/maw/conversations/${activeConversationId}/reject`, { method: 'POST' });
+      document.getElementById('council-actions').style.display = 'none';
+      updatePipeline({ state: 'FAILED', review_iterations: 0 });
+    }
+
+    function connectWebSocket(taskNum) {
+      if (ws) ws.close();
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws/workflow/${taskNum}`);
+      ws.onmessage = (ev) => {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'log') appendLog(data.entry);
+        if (data.workflow) updateFromWorkflow(data.workflow);
+      };
+    }
+
+    function appendLog(entry) {
+      const term = document.getElementById('terminal');
+      const prefix = entry.stream === 'stderr' ? '[ERR] ' : entry.stream === 'git' ? '[GIT] ' : '';
+      term.textContent += `${entry.ts} ${prefix}${entry.line}\n`;
+      term.scrollTop = term.scrollHeight;
+    }
+
+    async function pollWorkflow() {
+      if (!activeTaskNum) return;
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const res = await fetch(`${API}/api/maw/workflow/${activeTaskNum}/status`);
+        if (!res.ok) continue;
+        const wf = await res.json();
+        updateFromWorkflow(wf);
+        if (wf.state === 'COMMIT_PENDING_APPROVAL') { showCommitModal(wf); return; }
+        if (wf.state === 'FAILED' || wf.state === 'FINAL_REPORT_PRESENTED') return;
+      }
+    }
+
+    function updateFromWorkflow(wf) {
+      currentWorkflow = wf;
+      updatePipeline(wf);
+      document.getElementById('workflow-state').textContent = wf.state;
+      const logs = wf.logs || [];
+      for (let i = lastLogCount; i < logs.length; i++) appendLog(logs[i]);
+      lastLogCount = logs.length;
+      const humanPanel = document.getElementById('human-review-actions');
+      humanPanel.style.display = (wf.state === 'REVIEW_PENDING' && wf.review_policy?.mode === 'Human') ? 'flex' : 'none';
+    }
+
+    function updatePipeline(wf) {
+      const state = wf.state;
+      const mapped = STATE_MAP[state] || state;
+      const order = ['COUNCIL_RUNNING','EXPORTED','EXECUTOR_RUNNING','REVIEW_RUNNING','FIX_LOOP','COMMIT_PENDING_APPROVAL','COMPLETED'];
+      let idx = order.indexOf(mapped);
+      if (wf.review_iterations > 0 && ['EXECUTOR_RUNNING','REVIEW_RUNNING','REVIEW_PENDING'].includes(state)) {
+        idx = Math.max(idx, order.indexOf('FIX_LOOP'));
+      }
+      document.querySelectorAll('#pipeline .node').forEach(node => {
+        const ns = node.dataset.state;
+        const ni = order.indexOf(ns);
+        node.classList.remove('active','done');
+        if (ni < idx) node.classList.add('done');
+        else if (ni === idx) node.classList.add('active');
+        if (ns === 'FIX_LOOP' && wf.review_iterations > 0 && ['EXECUTOR_RUNNING','REVIEW_RUNNING','REVIEW_PENDING'].includes(state)) {
+          node.classList.add('active');
+        }
       });
-    };
+    }
+
+    async function submitHumanReview(decision) {
+      if (!activeTaskNum) return;
+      await fetch(`${API}/api/maw/workflow/${activeTaskNum}/human-review-complete`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ decision }),
+      });
+      pollWorkflow();
+    }
+
+    function showCommitModal(wf) {
+      const r = wf.pre_commit_report || {};
+      document.getElementById('commit-report').innerHTML = `
+        <div class="report-row"><span>Task ID</span><span>${r.task_id || ''}</span></div>
+        <div class="report-row"><span>Title</span><span>${r.title || ''}</span></div>
+        <div class="report-row"><span>Files Changed</span><span>${r.files_changed || ''}</span></div>
+        <div class="report-row"><span>Review Decision</span><span>${r.review_decision || ''} (${r.review_iterations || 0} loops)</span></div>
+        <div class="report-row"><span>Summary</span><span>${(r.chairman_summary || '').slice(0,200)}</span></div>`;
+      document.getElementById('commit-modal').classList.add('open');
+    }
+
+    async function approveCommit() {
+      await fetch(`${API}/api/maw/workflow/${activeTaskNum}/approve-commit`, { method: 'POST' });
+      document.getElementById('commit-modal').classList.remove('open');
+      updatePipeline({ state: 'COMPLETED', review_iterations: currentWorkflow?.review_iterations || 0 });
+    }
+    async function requestChanges() {
+      await fetch(`${API}/api/maw/workflow/${activeTaskNum}/request-changes`, { method: 'POST' });
+      document.getElementById('commit-modal').classList.remove('open');
+      pollWorkflow();
+    }
+    async function cancelWorkflow() {
+      await fetch(`${API}/api/maw/workflow/${activeTaskNum}/cancel`, { method: 'POST' });
+      document.getElementById('commit-modal').classList.remove('open');
+      updatePipeline({ state: 'FAILED', review_iterations: 0 });
+    }
+
+    init();
   </script>
 </body>
 </html>

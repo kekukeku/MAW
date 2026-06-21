@@ -35,23 +35,40 @@ class TestMAWExportAdapter(unittest.TestCase):
         self.assertEqual(slugify_title(""), "council_synthesis")
         self.assertEqual(slugify_title(None), "council_synthesis")
 
+    def _make_valid_target(self, base_dir):
+        """Create a minimal MAW target project contract structure."""
+        for d in ("TASKS", "PLANNING", "REVIEWS", "scripts", "agent-runner"):
+            os.makedirs(os.path.join(base_dir, d), exist_ok=True)
+        with open(os.path.join(base_dir, "AGENT_STATE.md"), "w") as f:
+            f.write("# Central Registry\n| Task ID | State | Linked PR |\n| :--- | :--- | :--- |\n")
+        with open(os.path.join(base_dir, "scripts", "trigger_antigravity.py"), "w") as f:
+            f.write("# executor\n")
+        with open(os.path.join(base_dir, "agent-runner", "trigger-review.js"), "w") as f:
+            f.write("// reviewer\n")
+        with open(os.path.join(base_dir, "agent-runner", "route-review-decision.js"), "w") as f:
+            f.write("// router\n")
+        with open(os.path.join(base_dir, ".gitignore"), "w") as f:
+            f.write("AGENT_STATE.md\nTASKS/\nPLANNING/\nREVIEWS/\n*.tmp\n.maw_export.lock\n")
+
     def test_validate_target(self):
         """Verify project path validation requirements."""
-        # Directory doesn't exist
         valid, issues = validate_target(os.path.join(self.test_dir, "nonexistent"))
         self.assertFalse(valid)
         self.assertTrue(len(issues) > 0)
-        
-        # Valid structure simulated
-        os.makedirs(os.path.join(self.test_dir, "TASKS"))
-        with open(os.path.join(self.test_dir, "AGENT_STATE.md"), "w") as f:
-            f.write("# Central Registry")
-        with open(os.path.join(self.test_dir, "watcher.py"), "w") as f:
-            f.write("# Watcher")
-            
+
+        self._make_valid_target(self.test_dir)
         valid, issues = validate_target(self.test_dir)
         self.assertTrue(valid)
         self.assertEqual(len(issues), 0)
+
+    def test_validate_target_missing_tmp_gitignore(self):
+        """Reject targets missing *.tmp in .gitignore."""
+        self._make_valid_target(self.test_dir)
+        with open(os.path.join(self.test_dir, ".gitignore"), "w") as f:
+            f.write("AGENT_STATE.md\nTASKS/\nPLANNING/\nREVIEWS/\n.maw_export.lock\n")
+        valid, issues = validate_target(self.test_dir)
+        self.assertFalse(valid)
+        self.assertTrue(any("*.tmp" in i for i in issues))
 
     def test_allocate_task_num(self):
         """Verify next task allocation scanner max + 1."""

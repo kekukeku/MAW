@@ -37,28 +37,49 @@ def is_pid_alive(pid):
         return False
 
 def validate_target(target_path):
-    """Validate that the target path contains necessary agent-cowork structure."""
+    """Validate that the target path satisfies the MAW target project contract."""
     if not os.path.isdir(target_path):
         return False, ["Target directory does not exist or is not a directory."]
-    
+
     issues = []
-    
-    # 1. Must contain AGENT_STATE.md
-    if not os.path.isfile(os.path.join(target_path, "AGENT_STATE.md")):
-        issues.append("Missing AGENT_STATE.md central registry.")
-        
-    # 2. Must contain TASKS/ directory
-    if not os.path.isdir(os.path.join(target_path, "TASKS")):
-        issues.append("Missing TASKS/ directory.")
-        
-    # 3. Must contain watcher.py or agent-runner/
-    # (Since watcher.py might be in the root directory or in agent-cowork/ depending on project layout)
-    has_watcher = os.path.isfile(os.path.join(target_path, "watcher.py")) or \
-                  os.path.isfile(os.path.join(target_path, "agent-cowork", "watcher.py"))
-    if not has_watcher:
-        issues.append("Missing watcher.py execution engine.")
-        
+    required_files = [
+        ("AGENT_STATE.md", "file"),
+        ("TASKS", "dir"),
+        ("PLANNING", "dir"),
+        ("REVIEWS", "dir"),
+        ("scripts/trigger_antigravity.py", "file"),
+        ("agent-runner/trigger-review.js", "file"),
+        ("agent-runner/route-review-decision.js", "file"),
+    ]
+    for rel_path, kind in required_files:
+        full = os.path.join(target_path, rel_path)
+        if kind == "file" and not os.path.isfile(full):
+            issues.append(f"Missing {rel_path}.")
+        elif kind == "dir" and not os.path.isdir(full):
+            issues.append(f"Missing {rel_path}/ directory.")
+
+    gitignore_path = os.path.join(target_path, ".gitignore")
+    if not os.path.isfile(gitignore_path):
+        issues.append("Missing .gitignore.")
+    else:
+        try:
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                gi = f.read()
+            for entry in ("AGENT_STATE.md", "TASKS/", "PLANNING/", "REVIEWS/", "*.tmp", ".maw_export.lock"):
+                if entry not in gi:
+                    issues.append(f".gitignore missing required entry: {entry}")
+        except Exception:
+            issues.append("Could not read .gitignore.")
+
     return len(issues) == 0, issues
+
+
+def get_conversations_dir():
+    """Resolve local MAW conversations directory (embedded council storage)."""
+    maw_root = os.path.dirname(os.path.abspath(__file__))
+    local_dir = os.path.join(maw_root, "data", "conversations")
+    os.makedirs(local_dir, exist_ok=True)
+    return local_dir
 
 def acquire_export_lock(target_path, target_key):
     """Acquire a lock to prevent concurrent write collisions."""
@@ -223,8 +244,8 @@ def append_registry_row_atomic(agent_state_path, task_num, slug, date_str):
                 pass
         raise RuntimeError(f"Atomic update of AGENT_STATE.md failed: {e}")
 
-def is_watcher_running(target_path):
-    """Probe if a local agent-cowork watcher is running for this workspace."""
+def is_monitor_running(target_path):
+    """Probe if a local agent-cowork monitor is running for this workspace."""
     # Method 1: Check process list
     try:
         import subprocess
@@ -233,7 +254,7 @@ def is_watcher_running(target_path):
         if result.returncode == 0:
             target_real = os.path.realpath(target_path)
             for line in result.stdout.splitlines():
-                if "watcher.py" in line and (target_real in line or "python" in line):
+                if "monitor.py" in line and (target_real in line or "python" in line):
                     return True
     except Exception:
         pass
@@ -241,7 +262,7 @@ def is_watcher_running(target_path):
     # Method 2: Probe local port 47821
     try:
         import urllib.request
-        # If the watcher or colleague dashboard server is running on 47821, it will respond
+        # If the monitor or colleague dashboard server is running on 47821, it will respond
         with urllib.request.urlopen("http://localhost:47821/", timeout=0.5) as response:
             if response.status == 200:
                 return True
@@ -378,6 +399,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         # HTTP 409 Conflict
         raise PermissionError(lock_err)
         
+    task_tmp_path = council_json_tmp_path = council_md_tmp_path = None
     try:
         # 3. Resolve next Task number
         agent_state_path = os.path.join(target_path, "AGENT_STATE.md")
@@ -395,21 +417,8 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         if os.path.exists(task_file_path):
             raise FileExistsError(f"Task file already exists at {task_file_path}. Aborting to prevent overwrite.")
             
-        # 4. Read conversation details from Karpathy storage
-        # We search sibling path and default path
-        sibling_conversations = "../Karpathy/data/conversations"
-        cwd_conversations = "./data/conversations"
-        
-        conversations_dir = None
-        for path in [cwd_conversations, sibling_conversations]:
-            if os.path.isdir(path):
-                conversations_dir = path
-                break
-                
-        if not conversations_dir:
-            # Let's search globally or default to sibling
-            conversations_dir = "/Users/kevin/Library/CloudStorage/GoogleDrive-kevink826@gmail.com/.shortcut-targets-by-id/1CFgqc7TbJd31W0rGGhR5LAE4OjMFS4za/all/Github projects/Karpathy/data/conversations"
-            
+        # 4. Read conversation from embedded MAW council storage
+        conversations_dir = get_conversations_dir()
         conv_file_path = os.path.join(conversations_dir, f"{conversation_id}.json")
         if not os.path.exists(conv_file_path):
             raise FileNotFoundError(f"Conversation {conversation_id} JSON file not found in {conversations_dir}.")
@@ -548,19 +557,19 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         os.replace(council_json_tmp_path, final_json_path)
         os.replace(council_md_tmp_path, final_md_path)
         
-        # C. Finally rename the task file to trigger the watcher (Trigger C)
+        # C. Finally rename the task file to trigger the monitor (Trigger C)
         os.replace(task_tmp_path, task_file_path)
         
-        # 8. Check watcher state
-        watcher_active = is_watcher_running(target_path)
-        dispatch_status = "dispatched_via_watcher" if watcher_active else "exported_not_dispatched"
+        # 8. Check monitor state
+        monitor_active = is_monitor_running(target_path)
+        dispatch_status = "dispatched_via_monitor" if monitor_active else "exported_not_dispatched"
         
         # Formulate copy-paste manual dispatch command quoted for paths with spaces
-        # e.g., cd '/path' && python3 watcher.py --project-root '/path' --dispatch-test '{"target":...}'
+        # e.g., cd '/path' && python3 monitor.py --project-root '/path' --dispatch-test '{"target":...}'
         escaped_path = target_path.replace("'", "'\\''")
         manual_cmd = (
             f"cd '{escaped_path}' && "
-            f"python3 watcher.py --project-root '{escaped_path}' "
+            f"python3 monitor.py --project-root '{escaped_path}' "
             f"--dispatch-test '{{\"target\":\"antigravity\",\"task_num\":\"{task_num}\",\"trigger\":\"task_status\",\"state\":\"IN_PROGRESS\"}}'"
         )
         
@@ -573,7 +582,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             "taskPath": task_file_path,
             "councilJsonPath": final_json_path,
             "councilMarkdownPath": final_md_path,
-            "watcherActive": watcher_active,
+            "monitorActive": monitor_active,
             "dispatchStatus": dispatch_status,
             "manualDispatchCommand": manual_cmd
         }
@@ -581,7 +590,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
     except Exception as e:
         # Cleanup tmp files if something went wrong
         for fpath in [task_tmp_path, council_json_tmp_path, council_md_tmp_path]:
-            if 'fpath' in locals() and os.path.exists(fpath):
+            if fpath and os.path.exists(fpath):
                 try:
                     os.remove(fpath)
                 except OSError:
