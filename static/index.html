@@ -103,7 +103,7 @@
     </div>
     <div class="topbar-actions">
       <button class="btn btn-secondary" onclick="showSetupMode()">⚙ 系統設定</button>
-      <button class="btn btn-primary" id="btn-launch" onclick="launchWorkflow()" disabled title="請先完成環境設定">▶ 啟動圓桌工作流</button>
+      <button class="btn btn-primary" id="btn-launch" onclick="launchWorkflow()" disabled title="請先完成環境設定">▶ 任務開始</button>
     </div>
   </header>
 
@@ -190,26 +190,67 @@
     </div>
   </div>
 
-  <div id="mode-workflow" class="layout mode-hidden">
+  <div id="mode-workflow" class="layout mode-hidden" style="grid-template-rows: auto 1fr 1fr; grid-template-columns: 1fr 1fr;">
+    <!-- Panel 3: Workflow Pipeline Tracker -->
+    <div class="panel" id="panel-pipeline" style="grid-row: 1; grid-column: 1 / span 2;">
+      <h2>騎士出任務</h2>
+      <div class="pipeline" id="pipeline">
+        <span class="node" data-state="COUNCIL_RUNNING">圓桌會議</span><span class="arrow">→</span>
+        <span class="node" data-state="EXPORTED">計畫已匯出</span><span class="arrow">→</span>
+        <span class="node" data-state="EXECUTOR_RUNNING">執行官編程</span><span class="arrow">→</span>
+        <span class="node" data-state="REVIEW_RUNNING">判官審查代碼</span><span class="arrow">→</span>
+        <span class="node" data-state="FIX_LOOP">修復迴圈</span><span class="arrow">→</span>
+        <span class="node" data-state="COMMIT_PENDING_APPROVAL">提交審批關卡</span><span class="arrow">→</span>
+        <span class="node" data-state="COMPLETED">任務完成</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+        <p>狀態: <span id="workflow-state" class="status-badge status-running">IDLE</span>
+           任務編號: <span id="task-num">—</span></p>
+        <span id="cost-hint" class="cost-hint" style="display: none; padding: 4px 8px; font-size: 11px; margin: 0; border-radius: 6px;"></span>
+      </div>
+      <div class="actions" id="human-review-actions" style="display:none">
+        <span style="font-size:12px;color:var(--muted);margin-right:8px;">人工審查決策:</span>
+        <button class="btn btn-primary" onclick="submitHumanReview('APPROVE')">Approve (通過)</button>
+        <button class="btn btn-secondary" onclick="submitHumanReview('REQUEST_CHANGES')">Request Changes (要求修改)</button>
+        <button class="btn btn-danger" onclick="submitHumanReview('REJECT')">Reject (駁回)</button>
+      </div>
+    </div>
+
     <!-- Panel 1: Council Creation -->
-    <div class="panel" id="panel-create">
-      <h2>Panel 1 — 發起圓桌會議</h2>
+    <div class="panel" id="panel-create" style="grid-row: 2 / span 2; grid-column: 1;">
+      <h2>發起圓桌會議</h2>
       <label>開發任務需求描述</label>
-      <textarea id="prompt" placeholder="請描述您希望董事會規劃的開發目標與細節..."></textarea>
-      <label>目標專案</label>
-      <select id="target-key"></select>
-      <label>參會董事會模型成員（多選）</label>
+      <textarea id="prompt" placeholder="騎士集結，聆聽陛下指示！"></textarea>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
+        <div>
+          <label>目標專案</label>
+          <select id="target-key"></select>
+        </div>
+        <div>
+          <label>梅林（負責彙整總結）</label>
+          <select id="chairman-model"></select>
+        </div>
+      </div>
+
+      <label>圓桌武士名單（多選）</label>
       <div class="model-grid" id="council-models"></div>
-      <label>董事長模型（負責彙整總結）</label>
-      <select id="chairman-model"></select>
-      <label>代碼審查模式</label>
-      <select id="review-mode">
-        <option value="AI">AI 自動審查 (Grok Build)</option>
-        <option value="Human">人工手動審查</option>
-        <option value="None">跳過審查直接提交</option>
-      </select>
-      <label>AI 自動審查迴圈上限 (0-5 次)</label>
-      <input type="number" id="max-iterations" min="0" max="5" value="3">
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
+        <div>
+          <label>審判模式</label>
+          <select id="review-mode">
+            <option value="AI">AI 自動審查 (Grok Build)</option>
+            <option value="Human">人工手動審查</option>
+            <option value="None">跳過審查直接提交</option>
+          </select>
+        </div>
+        <div>
+          <label>AI 自動審查迴圈上限 (0-5 次)</label>
+          <input type="number" id="max-iterations" min="0" max="5" value="3">
+        </div>
+      </div>
+
       <label><input type="checkbox" id="allow-changes" checked> 允許自動退件修復迴圈 (Request Changes)</label>
       <label title="取消核取時，只有在伺服器環境變數 ALLOW_AUTO_COMMIT=true 時才會跳過審批">
         <input type="checkbox" id="require-commit" checked> 程式碼提交與合併前需人工審批二次確認 (Gate #2)
@@ -222,52 +263,29 @@
         <button class="btn btn-primary" onclick="startCouncil()">開始開會</button>
       </div>
       <p id="create-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
-      <div id="cost-hint" class="cost-hint" style="display:none"></div>
     </div>
 
     <!-- Panel 2: Council Result / Final Report -->
-    <div class="panel" id="panel-council">
-      <h2 id="panel2-title">Panel 2 — 董事會決議審查 / 最終報告</h2>
-      <div id="council-results"><p style="color:var(--muted)">發起圓桌會議後在此展示開會結果。</p></div>
+    <div class="panel" id="panel-council" style="grid-row: 2; grid-column: 2; display: flex; flex-direction: column;">
+      <h2 id="panel2-title">圓桌決議與任務報告</h2>
+      <div id="council-results" style="flex: 1; overflow: auto;"><p style="color:var(--muted)">發起圓桌會議後在此展示開會結果。</p></div>
       <div class="actions" id="council-actions" style="display:none">
         <button class="btn btn-primary" onclick="approveCouncil()">批准決議並動工</button>
         <button class="btn btn-danger" onclick="rejectCouncil()">否決提案</button>
       </div>
     </div>
 
-    <!-- Panel 3: Workflow Pipeline Tracker -->
-    <div class="panel full-width" id="panel-pipeline">
-      <h2>Panel 3 — 自動化工作流流水線</h2>
-      <div class="pipeline" id="pipeline">
-        <span class="node" data-state="COUNCIL_RUNNING">圓桌會議</span><span class="arrow">→</span>
-        <span class="node" data-state="EXPORTED">計畫已匯出</span><span class="arrow">→</span>
-        <span class="node" data-state="EXECUTOR_RUNNING">執行者寫碼</span><span class="arrow">→</span>
-        <span class="node" data-state="REVIEW_RUNNING">審查者審代碼</span><span class="arrow">→</span>
-        <span class="node" data-state="FIX_LOOP">修復迴圈</span><span class="arrow">→</span>
-        <span class="node" data-state="COMMIT_PENDING_APPROVAL">提交審批關卡</span><span class="arrow">→</span>
-        <span class="node" data-state="COMPLETED">任務完成</span>
-      </div>
-      <p>狀態: <span id="workflow-state" class="status-badge status-running">IDLE</span>
-         任務編號: <span id="task-num">—</span></p>
-      <div class="actions" id="human-review-actions" style="display:none">
-        <span style="font-size:12px;color:var(--muted);margin-right:8px;">人工審查決策:</span>
-        <button class="btn btn-primary" onclick="submitHumanReview('APPROVE')">Approve (通過)</button>
-        <button class="btn btn-secondary" onclick="submitHumanReview('REQUEST_CHANGES')">Request Changes (要求修改)</button>
-        <button class="btn btn-danger" onclick="submitHumanReview('REJECT')">Reject (駁回)</button>
-      </div>
-    </div>
-
     <!-- Panel 4: Real-Time Log Terminal -->
-    <div class="panel full-width" id="panel-logs">
-      <h2>Panel 4 — 實時執行終端日誌 (stdout)</h2>
-      <div id="terminal"></div>
+    <div class="panel" id="panel-logs" style="grid-row: 3; grid-column: 2; display: flex; flex-direction: column;">
+      <h2>騎士日誌</h2>
+      <div id="terminal" style="flex: 1; height: auto;"></div>
     </div>
   </div><!-- /mode-workflow -->
 
   <!-- Panel 5: Pre-Commit Report Modal -->
   <div class="modal" id="commit-modal">
     <div class="modal-box">
-      <h3>Panel 5 — 程式碼提交與合併審批報告</h3>
+      <h3>程式碼提交與合併審批報告</h3>
       <div id="commit-report"></div>
       <div class="actions">
         <button class="btn btn-primary" onclick="approveCommit()">核准合併並提交 (Approve)</button>
@@ -325,7 +343,7 @@
       const data = await res.json();
       const btn = document.getElementById('btn-launch');
       btn.disabled = !data.ready;
-      btn.title = data.ready ? '啟動工作流' : (data.issues?.[0] || '請先完成環境設定');
+      btn.title = data.ready ? '任務開始' : (data.issues?.[0] || '請先完成環境設定');
       document.getElementById('preflight-issues').innerHTML = (data.issues || []).map(i => `<li>${i}</li>`).join('');
     }
 
@@ -583,12 +601,12 @@
       const councilCount = selectedModels().length;
       if (isMock) {
         hint.className = 'cost-hint mock';
-        hint.textContent = `🧪 模擬模式 (MAW_MOCK_MODE) — 將不會消耗實際 API 點數 (${councilCount} 個模型成員 + 1 個董事長)`;
+        hint.textContent = `🧪 模擬模式 — 共召集 ${councilCount} 位騎士 + 1 個梅林模型開會 (不消耗點數)`;
       } else {
         hint.className = 'cost-hint live';
-        hint.textContent = `💰 真實模式 — 將呼叫 ${councilCount} 個董事會模型成員 + 1 個董事長模型進行回答及互評`;
+        hint.textContent = `💰 共召集 ${councilCount} 位騎士 + 1 個梅林模型開會`;
       }
-      hint.style.display = 'block';
+      hint.style.display = 'inline-block';
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -662,21 +680,21 @@
       const conv = data.conversation;
       const msg = conv.messages.find(m => m.stage3);
       if (!msg) return;
-      document.getElementById('panel2-title').textContent = 'Panel 2 — 董事會決議審查';
+      document.getElementById('panel2-title').textContent = '圓桌決議審查';
       let html = '';
       if (msg.stage1) {
-         html += '<div class="stage-block"><h3>Stage 1 — 委員獨立回答</h3>';
+         html += '<div class="stage-block"><h3>Stage 1 — 武士獨立回答</h3>';
          msg.stage1.forEach(s => { html += `<p><strong>${s.model}</strong></p><div>${marked.parse(s.response)}</div>`; });
          html += '</div>';
       }
       if (msg.stage2) {
          html += '<div class="stage-block"><h3>Stage 2 — 匿名互相排名評價</h3>';
          msg.stage2.forEach((s, i) => {
-           html += `<p><strong>評審委員 ${i + 1}</strong></p><div>${marked.parse(s.ranking)}</div>`;
+           html += `<p><strong>評審武士 ${i + 1}</strong></p><div>${marked.parse(s.ranking)}</div>`;
          });
          html += '</div>';
       }
-      html += `<div class="stage-block"><h3>Stage 3 — 董事長綜合彙整決議</h3><div>${marked.parse(msg.stage3.response)}</div></div>`;
+      html += `<div class="stage-block"><h3>Stage 3 — 梅林綜合彙整決議</h3><div>${marked.parse(msg.stage3.response)}</div></div>`;
       document.getElementById('council-results').innerHTML = html;
       document.getElementById('council-actions').style.display = 'flex';
       updatePipeline({ state: 'COUNCIL_PENDING_APPROVAL', review_iterations: 0 });
@@ -784,7 +802,7 @@
 
     function showFinalReport(wf) {
       const r = wf.final_report || {};
-      document.getElementById('panel2-title').textContent = 'Panel 2 — 董事會最終完工結案報告';
+      document.getElementById('panel2-title').textContent = '圓桌最終完工結案報告';
       document.getElementById('council-actions').style.display = 'none';
       document.getElementById('council-results').innerHTML = `
         <div class="final-report">
@@ -807,7 +825,7 @@
         <div class="report-row"><span>任務標題</span><span>${r.title || ''}</span></div>
         <div class="report-row"><span>實際異動檔案</span><span>${r.files_changed || ''}</span></div>
         <div class="report-row"><span>審查決策</span><span>${r.review_decision || ''} (${r.review_iterations || 0} 次修復迴圈)</span></div>
-        <div class="report-row"><span>董事長摘要</span><span>${(r.chairman_summary || '').slice(0,200)}</span></div>`;
+        <div class="report-row"><span>梅林摘要</span><span>${(r.chairman_summary || '').slice(0,200)}</span></div>`;
       document.getElementById('commit-modal').classList.add('open');
     }
 
