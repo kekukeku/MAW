@@ -280,7 +280,7 @@ def _is_masked(value: str) -> bool:
     if not value:
         return False
     value = value.strip()
-    return "..." in value or value == "***"
+    return "..." in value or value == "***" or "*" in value
 
 
 def save_setup(
