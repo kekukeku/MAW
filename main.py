@@ -109,6 +109,16 @@ class SetupScaffoldRequest(BaseModel):
     patchGitignore: bool = True
 
 
+class DirectKeysRequest(BaseModel):
+    openai: Optional[str] = None
+    anthropic: Optional[str] = None
+    google: Optional[str] = None
+    deepseek: Optional[str] = None
+    kimi: Optional[str] = None
+    qwen: Optional[str] = None
+    grok: Optional[str] = None
+
+
 class SetupSaveRequest(BaseModel):
     targetPath: Optional[str] = None
     targetKey: Optional[str] = None
@@ -116,6 +126,10 @@ class SetupSaveRequest(BaseModel):
     llmProvider: Optional[str] = None
     openrouterKey: Optional[str] = None
     litellmBase: Optional[str] = None
+    litellmKey: Optional[str] = None
+    directKeys: Optional[DirectKeysRequest] = None
+    executorId: Optional[str] = None
+    reviewerId: Optional[str] = None
 
 
 class SetupInstallAdaptersRequest(BaseModel):
@@ -134,10 +148,13 @@ async def serve_dashboard():
 
 @app.get("/api/maw/config")
 async def get_config():
+    llm_data = setup_api.get_llm_models()
     return {
-        "defaultCouncilModels": DEFAULT_COUNCIL_MODELS,
-        "defaultChairmanModel": DEFAULT_CHAIRMAN_MODEL,
-        "availableModels": AVAILABLE_MODELS,
+        "defaultCouncilModels": llm_data["defaultCouncilModels"],
+        "defaultChairmanModel": llm_data["defaultChairmanModel"],
+        "availableModels": [m["id"] for m in llm_data["models"] if m["enabled"]],
+        "allModels": llm_data["models"],
+        "llmProvider": llm_data["provider"],
         "mockMode": MOCK_MODE,
         "allowAutoCommit": ALLOW_AUTO_COMMIT,
     }
@@ -187,6 +204,20 @@ async def get_conversation_details(conversation_id: str):
 async def create_conversation(req: NewConversationRequest):
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt is required.")
+    if req.councilModels and not req.mock and not MOCK_MODE:
+        llm_data = setup_api.get_llm_models()
+        enabled = {m["id"] for m in llm_data["models"] if m["enabled"]}
+        disabled = [m for m in req.councilModels if m not in enabled]
+        if disabled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Models not available for current LLM provider: {', '.join(disabled)}",
+            )
+        if req.chairmanModel and req.chairmanModel not in enabled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Chairman model not available: {req.chairmanModel}",
+            )
     try:
         policy = req.reviewPolicy.model_dump() if req.reviewPolicy else None
         workflow = await orchestrator.start_council(
@@ -351,6 +382,9 @@ async def setup_patch_gitignore(req: SetupValidateRequest):
 
 @app.post("/api/setup/save")
 async def setup_save(req: SetupSaveRequest):
+    direct_keys = None
+    if req.directKeys:
+        direct_keys = {k: v for k, v in req.directKeys.model_dump().items() if v}
     return setup_api.save_setup(
         target_path=req.targetPath,
         target_key=req.targetKey,
@@ -358,6 +392,10 @@ async def setup_save(req: SetupSaveRequest):
         llm_provider=req.llmProvider,
         openrouter_key=req.openrouterKey,
         litellm_base=req.litellmBase,
+        litellm_key=req.litellmKey,
+        direct_keys=direct_keys,
+        executor_id=req.executorId,
+        reviewer_id=req.reviewerId,
     )
 
 

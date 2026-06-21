@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from council.config import MOCK_MODE
-from council.openrouter import query_model, query_models_parallel, OpenRouterError
+from council.llm_provider import query_model, query_models_parallel, LLMProviderError
 from council.storage import create_conversation_skeleton, save_conversation
 
 logger = logging.getLogger(__name__)
@@ -179,7 +179,7 @@ async def _run_council_live(
             stage1.append({"model": item["model"], "response": item["response"]})
 
     if not stage1:
-        raise OpenRouterError(f"All Stage 1 models failed: {'; '.join(errors)}", retryable=False)
+        raise LLMProviderError(f"All Stage 1 models failed: {'; '.join(errors)}", retryable=False)
 
     # Stage 2: Anonymous peer rankings
     logger.info("Council Stage 2: peer rankings")

@@ -865,7 +865,7 @@ class LoopOrchestrator:
         if wf.get("mock") or not chairman_model:
             return f"Final summary: {base[:500]}"
         try:
-            from council.openrouter import query_model
+            from council.llm_provider import query_model
             response = await query_model(
                 chairman_model,
                 [{

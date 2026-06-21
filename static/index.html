@@ -64,7 +64,12 @@
     .health-green { color: var(--ok); }
     .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .setup-panel { grid-column: 1 / -1; }
-    @media (max-width: 900px) { .setup-grid { grid-template-columns: 1fr; } }
+    .provider-section { margin-top: 8px; }
+    .direct-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .vendor-tag { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 6px; margin: 2px 4px 2px 0; background: rgba(16,185,129,0.12); color: var(--ok); }
+    .vendor-tag.fail { background: rgba(239,68,68,0.12); color: var(--err); }
+    .model-disabled { opacity: 0.45; }
+    @media (max-width: 900px) { .setup-grid, .direct-keys { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -82,15 +87,34 @@
       <div class="setup-grid">
         <div>
           <label>LLM Provider</label>
-          <select id="llm-provider">
+          <select id="llm-provider" onchange="onProviderChange()">
             <option value="litellm">★ LiteLLM Proxy (recommended)</option>
-            <option value="openrouter">OpenRouter (cloud)</option>
-            <option value="direct">Direct API (Phase 2)</option>
+            <option value="openrouter">OpenRouter (cloud aggregation)</option>
+            <option value="direct">Direct API (7 vendors)</option>
           </select>
-          <label>LiteLLM Base URL</label>
-          <input id="litellm-base" value="http://localhost:4000">
-          <label>OpenRouter API Key</label>
-          <input id="openrouter-key" type="password" placeholder="sk-or-...">
+          <div id="section-litellm" class="provider-section">
+            <label>LiteLLM Base URL</label>
+            <input id="litellm-base" value="http://localhost:4000">
+            <label>LiteLLM API Key (optional)</label>
+            <input id="litellm-key" type="password" placeholder="Optional proxy key">
+          </div>
+          <div id="section-openrouter" class="provider-section mode-hidden">
+            <label>OpenRouter API Key</label>
+            <input id="openrouter-key" type="password" placeholder="sk-or-...">
+          </div>
+          <div id="section-direct" class="provider-section mode-hidden">
+            <p style="font-size:12px;color:var(--muted);margin:6px 0">Fill keys to enable vendors. Kimi/Qwen auto-detect CN vs intl.</p>
+            <div class="direct-keys">
+              <div><label>OpenAI</label><input id="key-openai" type="password" placeholder="OPENAI_API_KEY"></div>
+              <div><label>Anthropic</label><input id="key-anthropic" type="password" placeholder="ANTHROPIC_API_KEY"></div>
+              <div><label>Google Gemini</label><input id="key-google" type="password" placeholder="GOOGLE_API_KEY"></div>
+              <div><label>DeepSeek</label><input id="key-deepseek" type="password" placeholder="DEEPSEEK_API_KEY"></div>
+              <div><label>Kimi / Moonshot</label><input id="key-kimi" type="password" placeholder="KIMI_API_KEY"></div>
+              <div><label>Qwen / 通義</label><input id="key-qwen" type="password" placeholder="QWEN_API_KEY"></div>
+              <div><label>Grok / xAI</label><input id="key-grok" type="password" placeholder="GROK_API_KEY"></div>
+            </div>
+            <div id="vendor-results" style="margin-top:8px"></div>
+          </div>
           <div class="actions">
             <button class="btn btn-secondary" onclick="testLlm()">Test Connection</button>
             <span id="llm-test-status" style="font-size:12px;color:var(--muted)"></span>
@@ -112,13 +136,17 @@
           <select id="executor-agent"></select>
           <label>Reviewer Agent</label>
           <select id="reviewer-agent"></select>
+          <div class="actions">
+            <button class="btn btn-secondary" onclick="installAdapters()">Install Agent Scripts</button>
+          </div>
         </div>
         <div>
-          <label>Notes</label>
+          <label>Preflight</label>
           <p style="font-size:12px;color:var(--muted);line-height:1.5">
-            Contract files live in <code>MAW_workflow/</code> inside your target project.
-            Click Scaffold to create the structure, then Launch Workflow when the health lamp is green.
+            Launch requires: LLM tested ✓, green health lamp ✓, agents selected ✓.
+            Contract files live in <code>MAW_workflow/</code>.
           </p>
+          <ul id="preflight-issues" style="font-size:12px;color:var(--muted);margin-left:16px"></ul>
           <div class="actions">
             <button class="btn btn-primary" onclick="saveSetup()">Save Settings</button>
           </div>
@@ -217,7 +245,8 @@
 
   <script>
     const API = window.location.origin;
-    let config = {}, targets = [], setupStatus = {}, activeConversationId = null, activeTaskNum = null;
+    let config = {}, targets = [], setupStatus = {}, llmModels = {}, activeConversationId = null, activeTaskNum = null;
+    const DIRECT_VENDORS = ['openai','anthropic','google','deepseek','kimi','qwen','grok'];
     let activeWorkflowId = null, ws = null, lastLogCount = 0, currentWorkflow = null;
 
     const STATE_MAP = {
@@ -240,6 +269,32 @@
       document.getElementById('mode-workflow').classList.remove('mode-hidden');
     }
 
+    function onProviderChange() {
+      const p = document.getElementById('llm-provider').value;
+      document.getElementById('section-litellm').classList.toggle('mode-hidden', p !== 'litellm');
+      document.getElementById('section-openrouter').classList.toggle('mode-hidden', p !== 'openrouter');
+      document.getElementById('section-direct').classList.toggle('mode-hidden', p !== 'direct');
+    }
+
+    function renderVendorResults(vendors) {
+      const el = document.getElementById('vendor-results');
+      if (!vendors || !Object.keys(vendors).length) { el.innerHTML = ''; return; }
+      el.innerHTML = Object.entries(vendors).map(([id, v]) => {
+        if (v.ok) return `<span class="vendor-tag">✅ ${v.label || id}</span>`;
+        return `<span class="vendor-tag fail">❌ ${id}: ${v.error || 'failed'}</span>`;
+      }).join('');
+    }
+
+    async function updateLaunchButton() {
+      const path = document.getElementById('project-path').value.trim();
+      const res = await fetch(`${API}/api/setup/preflight${path ? `?projectPath=${encodeURIComponent(path)}` : ''}`);
+      const data = await res.json();
+      const btn = document.getElementById('btn-launch');
+      btn.disabled = !data.ready;
+      btn.title = data.ready ? 'Launch workflow' : (data.issues?.[0] || 'Complete setup first');
+      document.getElementById('preflight-issues').innerHTML = (data.issues || []).map(i => `<li>${i}</li>`).join('');
+    }
+
     function renderHealth(health) {
       const lamp = document.getElementById('health-lamp');
       const issuesEl = document.getElementById('health-issues');
@@ -249,7 +304,7 @@
       lamp.className = `health-lamp ${cls[h.lamp] || 'health-red'}`;
       lamp.textContent = `${icons[h.lamp] || '🔴'} ${h.label || 'Not ready'}`;
       issuesEl.innerHTML = (h.issues || []).map(i => `<li>${i}</li>`).join('');
-      document.getElementById('btn-launch').disabled = h.lamp !== 'green';
+      updateLaunchButton();
     }
 
     function renderAgentSelects(agents) {
@@ -266,31 +321,85 @@
       setupStatus = await res.json();
       document.getElementById('llm-provider').value = setupStatus.llmProvider || 'litellm';
       document.getElementById('litellm-base').value = setupStatus.keys?.litellmBase || 'http://localhost:4000';
+      onProviderChange();
+      renderVendorResults(setupStatus.vendorRoutes);
       const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget) || setupStatus.projects?.[0];
       if (project?.path) {
         document.getElementById('project-path').value = project.path;
         renderHealth(project.health);
       }
       renderAgentSelects(setupStatus.agents);
+      if (setupStatus.defaultAgents) {
+        document.getElementById('executor-agent').value = setupStatus.defaultAgents.executor || 'antigravity';
+        document.getElementById('reviewer-agent').value = setupStatus.defaultAgents.reviewer || 'grok_build';
+      }
+      if (setupStatus.llmTested) {
+        document.getElementById('llm-test-status').textContent = setupStatus.llmTestedAt
+          ? `✅ Last tested ${new Date(setupStatus.llmTestedAt).toLocaleString()}`
+          : '✅ Previously tested';
+      }
     }
 
-    async function saveSetup() {
-      const body = {
+    function buildSaveBody() {
+      const directKeys = {};
+      DIRECT_VENDORS.forEach(v => {
+        const val = document.getElementById(`key-${v}`)?.value?.trim();
+        if (val) directKeys[v] = val;
+      });
+      return {
         targetPath: document.getElementById('project-path').value.trim(),
         targetKey: 'default',
         targetName: 'Default Target',
         llmProvider: document.getElementById('llm-provider').value,
         litellmBase: document.getElementById('litellm-base').value.trim(),
+        litellmKey: document.getElementById('litellm-key')?.value?.trim() || undefined,
         openrouterKey: document.getElementById('openrouter-key').value.trim() || undefined,
+        directKeys: Object.keys(directKeys).length ? directKeys : undefined,
+        executorId: document.getElementById('executor-agent').value,
+        reviewerId: document.getElementById('reviewer-agent').value,
       };
+    }
+
+    async function saveSetup() {
       const res = await fetch(`${API}/api/setup/save`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(buildSaveBody()),
       });
       setupStatus = await res.json();
       document.getElementById('setup-status').textContent = 'Settings saved.';
       await refreshTargets();
+      await loadLlmModels();
       const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget);
       if (project) renderHealth(project.health);
+    }
+
+    async function loadLlmModels() {
+      const res = await fetch(`${API}/api/setup/llm-models`);
+      llmModels = await res.json();
+      const cfgRes = await fetch(`${API}/api/maw/config`);
+      config = await cfgRes.json();
+      renderModels();
+    }
+
+    async function installAdapters() {
+      const path = document.getElementById('project-path').value.trim();
+      if (!path) return alert('Enter a project path first');
+      await saveSetup();
+      const res = await fetch(`${API}/api/setup/install-adapters`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          projectPath: path,
+          executorId: document.getElementById('executor-agent').value,
+          reviewerId: document.getElementById('reviewer-agent').value,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || 'Install failed');
+        return;
+      }
+      const data = await res.json();
+      document.getElementById('setup-status').textContent = data.message;
+      await validateProject();
     }
 
     async function validateProject() {
@@ -327,6 +436,9 @@
       const res = await fetch(`${API}/api/setup/test-llm`, { method: 'POST' });
       const data = await res.json();
       document.getElementById('llm-test-status').textContent = data.ok ? `✅ ${data.message}` : `❌ ${data.message}`;
+      if (data.vendors) renderVendorResults(data.vendors);
+      await loadLlmModels();
+      await updateLaunchButton();
     }
 
     async function pickFolder() {
@@ -361,13 +473,10 @@
     }
 
     async function init() {
-      const [cfgRes] = await Promise.all([
-        fetch(`${API}/api/maw/config`), loadSetupStatus(), refreshTargets(),
-      ]);
-      config = await cfgRes.json();
-      renderModels();
+      await Promise.all([loadSetupStatus(), refreshTargets(), loadLlmModels()]);
       renderAutoCommitBadge();
       updateCostHint();
+      await updateLaunchButton();
     }
 
     function renderAutoCommitBadge() {
@@ -386,10 +495,18 @@
       const chair = document.getElementById('chairman-model');
       grid.innerHTML = '';
       chair.innerHTML = '';
-      (config.availableModels || []).forEach(m => {
-        const checked = (config.defaultCouncilModels || []).includes(m) ? 'checked' : '';
-        grid.innerHTML += `<label><input type="checkbox" value="${m}" ${checked}> ${m.split('/').pop()}</label>`;
-        chair.innerHTML += `<option value="${m}" ${m === config.defaultChairmanModel ? 'selected' : ''}>${m}</option>`;
+      const models = config.allModels || (config.availableModels || []).map(id => ({ id, enabled: true }));
+      models.forEach(m => {
+        const id = m.id || m;
+        const enabled = m.enabled !== false;
+        const checked = enabled && (config.defaultCouncilModels || []).includes(id) ? 'checked' : '';
+        const dis = enabled ? '' : 'disabled';
+        const cls = enabled ? '' : 'model-disabled';
+        const tip = m.reason ? ` title="${m.reason}"` : '';
+        grid.innerHTML += `<label class="${cls}"${tip}><input type="checkbox" value="${id}" ${checked} ${dis}> ${id.split('/').pop()}</label>`;
+        if (enabled) {
+          chair.innerHTML += `<option value="${id}" ${id === config.defaultChairmanModel ? 'selected' : ''}>${id}</option>`;
+        }
       });
     }
 
@@ -425,10 +542,12 @@
     async function startCouncil() {
       const prompt = document.getElementById('prompt').value.trim();
       if (!prompt) return alert('Enter a prompt');
+      const models = selectedModels();
+      if (!models.length) return alert('Select at least one enabled council model');
       document.getElementById('create-status').textContent = 'Council running...';
       const body = {
         prompt, targetKey: document.getElementById('target-key').value,
-        councilModels: selectedModels(),
+        councilModels: models,
         chairmanModel: document.getElementById('chairman-model').value,
         reviewPolicy: {
           mode: document.getElementById('review-mode').value,
