@@ -72,6 +72,7 @@ class ReviewPolicy(BaseModel):
     max_iterations: int = 3
     allow_request_changes: bool = True
     require_pre_commit_approval: bool = True
+    auto_approve_council: bool = False
 
 
 class NewConversationRequest(BaseModel):

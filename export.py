@@ -10,21 +10,39 @@ import shutil
 CONFIG_PATH = os.path.expanduser("~/.agent-cowork/targets.json")
 
 def load_targets():
-    """Load and return target configurations."""
+    """Load and return target configurations.
+
+    If TARGET_PROJECT_PATH is set, inject a synthetic 'env' target so users
+    can get started without editing ~/.agent-cowork/targets.json.
+    """
     if not os.path.exists(CONFIG_PATH):
         # Create default folder if it doesn't exist
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         # Create an empty config file
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump({"default": "", "projects": {}}, f, indent=2)
-        return {"default": "", "projects": {}}
-    
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading targets.json: {e}", file=sys.stderr)
-        return {"default": "", "projects": {}}
+        data = {"default": "", "projects": {}}
+    else:
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Error loading targets.json: {e}", file=sys.stderr)
+            data = {"default": "", "projects": {}}
+
+    env_path = os.getenv("TARGET_PROJECT_PATH", "").strip()
+    if env_path and os.path.isdir(env_path):
+        projects = data.setdefault("projects", {})
+        if "env" not in projects:
+            projects["env"] = {
+                "name": "ENV Target",
+                "path": env_path,
+                "description": "From TARGET_PROJECT_PATH environment variable",
+            }
+        if not data.get("default"):
+            data["default"] = "env"
+
+    return data
 
 def is_pid_alive(pid):
     """Check if a process is still running."""

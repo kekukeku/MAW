@@ -46,6 +46,14 @@
     .status-running { background: rgba(99,102,241,0.2); color: var(--accent); }
     .status-failed { background: rgba(239,68,68,0.2); color: var(--err); }
     .status-done { background: rgba(16,185,129,0.2); color: var(--ok); }
+    .cost-hint { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; }
+    .cost-hint.mock { background: rgba(16,185,129,0.1); color: var(--ok); }
+    .cost-hint.live { background: rgba(245,158,11,0.1); color: var(--warn); }
+    .auto-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; margin-left: 8px; }
+    .auto-badge.on { background: rgba(16,185,129,0.15); color: var(--ok); }
+    .auto-badge.off { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .final-report { background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.25); border-radius: 12px; padding: 16px; margin-top: 16px; }
+    .final-report h3 { color: var(--ok); }
   </style>
 </head>
 <body>
@@ -71,16 +79,21 @@
       <input type="number" id="max-iterations" min="0" max="5" value="3">
       <label><input type="checkbox" id="allow-changes" checked> Allow REQUEST_CHANGES loop</label>
       <label><input type="checkbox" id="require-commit" checked> Require pre-commit approval</label>
+      <label title="When enabled AND ALLOW_AUTO_COMMIT=true on server, skips council approval gate">
+        <input type="checkbox" id="auto-approve-council"> Auto-approve council plan
+        <span id="auto-commit-badge" class="auto-badge off">⚠ server off</span>
+      </label>
       <label><input type="checkbox" id="mock-mode"> Use mock council (no API cost)</label>
       <div class="actions">
         <button class="btn btn-primary" onclick="startCouncil()">Start Council</button>
       </div>
       <p id="create-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
+      <div id="cost-hint" class="cost-hint" style="display:none"></div>
     </div>
 
-    <!-- Panel 2: Council Result Review -->
+    <!-- Panel 2: Council Result / Final Report -->
     <div class="panel" id="panel-council">
-      <h2>Panel 2 — Council Result Review</h2>
+      <h2 id="panel2-title">Panel 2 — Council Result Review</h2>
       <div id="council-results"><p style="color:var(--muted)">Run a council to see results.</p></div>
       <div class="actions" id="council-actions" style="display:none">
         <button class="btn btn-primary" onclick="approveCouncil()">Approve Plan</button>
@@ -155,6 +168,23 @@
       renderModels();
       renderTargets();
       document.getElementById('mock-mode').checked = !!config.mockMode;
+      renderAutoCommitBadge();
+      updateCostHint();
+    }
+
+    function renderAutoCommitBadge() {
+      const badge = document.getElementById('auto-commit-badge');
+      const cb = document.getElementById('auto-approve-council');
+      if (config.allowAutoCommit) {
+        badge.className = 'auto-badge on';
+        badge.textContent = '\u2714 server on';
+        cb.disabled = false;
+      } else {
+        badge.className = 'auto-badge off';
+        badge.textContent = '\u26a0 server off';
+        cb.disabled = true;
+        cb.checked = false;
+      }
     }
 
     function renderModels() {
@@ -178,6 +208,28 @@
       return [...document.querySelectorAll('#council-models input:checked')].map(c => c.value);
     }
 
+    function updateCostHint() {
+      const hint = document.getElementById('cost-hint');
+      const isMock = document.getElementById('mock-mode').checked;
+      const councilCount = selectedModels().length;
+      if (isMock) {
+        hint.className = 'cost-hint mock';
+        hint.textContent = `\u{1F9EA} Mock mode — no API calls (simulates ${councilCount} members + 1 chairman)`;
+      } else {
+        hint.className = 'cost-hint live';
+        hint.textContent = `\u{1F4B0} Live mode — will call ${councilCount} council members + 1 chairman via OpenRouter`;
+      }
+      hint.style.display = 'block';
+    }
+
+    // Update cost hint whenever models or mock toggle change
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        document.getElementById('mock-mode').addEventListener('change', updateCostHint);
+        document.getElementById('council-models').addEventListener('change', updateCostHint);
+      }, 100);
+    });
+
     async function startCouncil() {
       const prompt = document.getElementById('prompt').value.trim();
       if (!prompt) return alert('Enter a prompt');
@@ -191,6 +243,7 @@
           max_iterations: parseInt(document.getElementById('max-iterations').value),
           allow_request_changes: document.getElementById('allow-changes').checked,
           require_pre_commit_approval: document.getElementById('require-commit').checked,
+          auto_approve_council: document.getElementById('auto-approve-council').checked,
         },
       };
       if (document.getElementById('mock-mode').checked) body.mock = true;
@@ -211,6 +264,16 @@
         const res = await fetch(`${API}/api/maw/workflows/${activeWorkflowId}`);
         if (!res.ok) continue;
         const wf = await res.json();
+        // If auto-approve kicked in, workflow may already have a task_num
+        if (wf.task_num) {
+          activeTaskNum = wf.task_num;
+          document.getElementById('task-num').textContent = activeTaskNum;
+          lastLogCount = 0;
+          document.getElementById('terminal').textContent = '';
+          connectWebSocket(activeTaskNum);
+          pollWorkflow();
+          return;
+        }
         if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
           activeConversationId = wf.conversation_id;
           document.getElementById('create-status').textContent = 'Council complete — review results';
@@ -230,6 +293,7 @@
       const conv = data.conversation;
       const msg = conv.messages.find(m => m.stage3);
       if (!msg) return;
+      document.getElementById('panel2-title').textContent = 'Panel 2 — Council Result Review';
       let html = '';
       if (msg.stage1) {
         html += '<div class="stage-block"><h3>Stage 1 — Individual Answers</h3>';
@@ -294,7 +358,8 @@
         const wf = await res.json();
         updateFromWorkflow(wf);
         if (wf.state === 'COMMIT_PENDING_APPROVAL') { showCommitModal(wf); return; }
-        if (wf.state === 'FAILED' || wf.state === 'FINAL_REPORT_PRESENTED') return;
+        if (wf.state === 'FINAL_REPORT_PRESENTED') { showFinalReport(wf); return; }
+        if (wf.state === 'FAILED') return;
       }
     }
 
@@ -338,6 +403,23 @@
       pollWorkflow();
     }
 
+    function showFinalReport(wf) {
+      const r = wf.final_report || {};
+      document.getElementById('panel2-title').textContent = 'Panel 2 — Final Report';
+      document.getElementById('council-actions').style.display = 'none';
+      document.getElementById('council-results').innerHTML = `
+        <div class="final-report">
+          <h3>\u2705 Task Complete: ${r.task_id || ''}</h3>
+          <div class="report-row"><span>Title</span><span>${r.title || ''}</span></div>
+          <div class="report-row"><span>Files Changed</span><span>${r.files_changed || ''}</span></div>
+          <div class="report-row"><span>Review Decision</span><span>${r.review_decision || ''} (${r.review_iterations || 0} loops)</span></div>
+          <div class="report-row"><span>Committed At</span><span>${r.committed_at || ''}</span></div>
+          <div style="margin-top:12px;font-style:italic;color:var(--muted);">${marked.parse(r.chairman_summary || '')}</div>
+        </div>`;
+      document.getElementById('workflow-state').className = 'status-badge status-done';
+      document.getElementById('workflow-state').textContent = wf.state;
+    }
+
     function showCommitModal(wf) {
       const r = wf.pre_commit_report || {};
       document.getElementById('commit-report').innerHTML = `
@@ -353,6 +435,7 @@
       await fetch(`${API}/api/maw/workflow/${activeTaskNum}/approve-commit`, { method: 'POST' });
       document.getElementById('commit-modal').classList.remove('open');
       updatePipeline({ state: 'COMPLETED', review_iterations: currentWorkflow?.review_iterations || 0 });
+      pollWorkflow();
     }
     async function requestChanges() {
       await fetch(`${API}/api/maw/workflow/${activeTaskNum}/request-changes`, { method: 'POST' });

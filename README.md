@@ -1,94 +1,158 @@
 # MAW — Autonomous Council-Executor-Reviewer Workflow Engine
 
-MAW is a portable, self-contained autonomous AI workflow engine. It runs a local multi-model AI council, exports approved plans to a target project, triggers executor/reviewer scripts, and manages the full loop with human approval gates.
+MAW is a standalone AI workflow engine that runs a multi-model **AI Council** (Karpathy-style 3-Stage deliberation), exports the decision as a task to a target project, triggers an **Executor** to implement it, runs a **Reviewer** to verify the result, and finally commits the work after human approval.
+
+```
+User Request → AI Council → Human Approval → Export → Executor → Reviewer → Human Approval → Git Commit → Final Report
+```
+
+## Features
+
+- **Self-contained**: No external Karpathy project needed. The council engine lives inside `MAW/council/`.
+- **User-controlled council**: Choose council members and chairman models via the UI.
+- **Safety-first defaults**: Two human approval gates (post-council and pre-commit) with optional advanced auto-mode.
+- **Real-time visibility**: WebSocket streaming of executor/reviewer logs.
+- **Portable target projects**: Executor/reviewer scripts stay in the target repo; MAW only invokes them.
+- **Mock mode**: Test the full loop without spending API credits.
 
 ## Quick Start
 
+### 1. Install dependencies
+
 ```bash
-# Install dependencies
 uv sync
+```
 
-# Configure environment
-cp .env.example .env   # set OPENROUTER_API_KEY
+### 2. Configure environment
 
-# Start server
+Copy `.env.example` to `.env` and fill in your OpenRouter key:
+
+```bash
+cp .env.example .env
+```
+
+```env
+OPENROUTER_API_KEY=sk-or-...
+TARGET_PROJECT_PATH=/path/to/your/target-project
+MAW_MOCK_MODE=0
+DEFAULT_COUNCIL_MODELS=openai/gpt-4o,anthropic/claude-3-5-sonnet,google/gemini-2.5-pro
+DEFAULT_CHAIRMAN_MODEL=openai/gpt-4o
+ALLOW_AUTO_COMMIT=false
+MAX_REVIEW_ITERATIONS=3
+EXECUTOR_TIMEOUT_SECONDS=600
+REVIEWER_TIMEOUT_SECONDS=300
+```
+
+### 3. Configure a target project
+
+Create or use a target project that follows the MAW contract. A working mock example is provided in `template_target_project/`.
+
+Target project structure:
+
+```
+target-project/
+├── AGENT_STATE.md              # central task registry
+├── TASKS/                      # task markdown files
+├── PLANNING/                   # council records & final reports
+├── REVIEWS/                    # review reports
+├── scripts/
+│   └── trigger_antigravity.py  # start executor
+├── agent-runner/
+│   ├── trigger-review.js       # start reviewer
+│   └── route-review-decision.js # parse review decision
+└── .gitignore                  # must ignore MAW-generated files
+```
+
+Add to `~/.agent-cowork/targets.json`:
+
+```json
+{
+  "default": "my-project",
+  "projects": {
+    "my-project": {
+      "name": "My Project",
+      "path": "/absolute/path/to/target-project",
+      "description": "Target workspace for MAW tasks"
+    }
+  }
+}
+```
+
+### 4. Start MAW
+
+```bash
 ./start.sh
-# Open http://localhost:8002
+# or
+uv run python -m uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 ```
 
-## Architecture
+Open http://localhost:8002.
+
+### 5. Run your first task
+
+1. Enter a task prompt.
+2. Select council members and chairman.
+3. Choose review policy (AI / Human / None).
+4. Click **Start Council**.
+5. Review the Stage 3 synthesis and click **Approve Plan**.
+6. Watch logs in real time.
+7. When the pre-commit report appears, review and click **Approve Commit**.
+
+## Project Layout
 
 ```
-User Prompt → Council (3-Stage) → [Human Gate #1] → Export → Executor → Review → [Human Gate #2] → Git Commit
+MAW/
+├── council/              # embedded Karpathy 3-Stage council
+│   ├── config.py
+│   ├── council.py
+│   ├── openrouter.py
+│   └── storage.py
+├── data/
+│   ├── conversations/    # council JSON records
+│   └── workflows.json    # persisted workflow states
+├── export.py             # atomic task export to target project
+├── loop_orchestrator.py  # workflow state machine
+├── main.py               # FastAPI REST + WebSocket API
+├── static/index.html     # 5-panel workflow dashboard
+├── template_target_project/  # runnable mock target project
+└── tests/
 ```
-
-### Components
-
-| Module | Purpose |
-|--------|---------|
-| `council/` | Embedded Karpathy 3-Stage LLM council |
-| `export.py` | Atomic task export to target project |
-| `loop_orchestrator.py` | Workflow state machine + subprocess streaming |
-| `main.py` | FastAPI REST + WebSocket API |
-| `static/index.html` | 5-panel workflow UI |
-| `template_target_project/` | Minimal target project skeleton |
-
-## Target Project Contract
-
-A valid target project must provide:
-
-```
-<target>/
-├── AGENT_STATE.md
-├── TASKS/  PLANNING/  REVIEWS/
-├── scripts/trigger_antigravity.py
-├── agent-runner/trigger-review.js
-├── agent-runner/route-review-decision.js
-└── .gitignore  (ignoring MAW-generated files)
-```
-
-Copy `template_target_project/` as a starting point.
-
-## Configuration
-
-### `.env`
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | Required for live council |
-| `TARGET_PROJECT_PATH` | — | Optional default target |
-| `MAW_MOCK_MODE` | `false` | Skip API calls in council |
-| `MAX_REVIEW_ITERATIONS` | `3` | Review loop limit |
-| `EXECUTOR_TIMEOUT_SECONDS` | `600` | Executor timeout |
-| `REVIEWER_TIMEOUT_SECONDS` | `300` | Reviewer timeout |
-| `ALLOW_AUTO_COMMIT` | `false` | Required to bypass human gate #2 when `require_pre_commit_approval` is false |
-
-### `~/.agent-cowork/targets.json`
-
-Register target projects with name and absolute path.
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/maw/conversations/new` | Start council |
-| GET | `/api/maw/conversations/{id}` | Council details + workflow |
-| POST | `/api/maw/conversations/{id}/approve` | Human gate #1 |
-| GET | `/api/maw/workflow/{task_num}/status` | Workflow status |
-| POST | `/api/maw/workflow/{task_num}/approve-commit` | Human gate #2 |
-| POST | `/api/maw/workflow/{task_num}/cancel` | Cancel workflow |
-| WS | `/ws/workflow/{task_num}` | Real-time log stream |
 
 ## Testing
 
+Run all tests in mock mode:
+
 ```bash
-# Run all tests (mock mode, no API costs)
-MAW_MOCK_MODE=1 uv run python -m pytest test_export.py test_council.py test_orchestrator.py test_e2e_workflow.py -v
+MAW_MOCK_MODE=1 uv run python -m unittest discover -v
 ```
 
-## Safety
+Run a quick smoke test against the template target project:
 
-- Two human approval gates (post-council, pre-commit)
-- Loop limits, subprocess timeouts, graceful `FAILED` states
-- `.maw_export.lock` prevents concurrent exports
-- Workflow state persisted in `data/workflows.json` for crash recovery
+```bash
+# Add template target to ~/.agent-cowork/targets.json, then:
+MAW_MOCK_MODE=1 uv run python -m uvicorn main:app --port 8002
+```
+
+## Safety Defaults
+
+- `ALLOW_AUTO_COMMIT=false`: the final commit always requires human approval.
+- `MAX_REVIEW_ITERATIONS=3`: REQUEST_CHANGES loops are capped.
+- Subprocess timeouts prevent runaway executor/reviewer processes.
+- All workflow states are persisted to `data/workflows.json` for crash recovery.
+
+## Advanced Auto-Mode
+
+To run fully autonomously (not recommended for production), set **all** of the following:
+
+```env
+ALLOW_AUTO_COMMIT=true
+```
+
+And in the task UI:
+
+- Uncheck **Require pre-commit approval**.
+- Optionally check **Allow REQUEST_CHANGES loop**.
+
+## License
+
+MIT

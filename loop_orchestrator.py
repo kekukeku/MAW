@@ -119,6 +119,7 @@ def _default_review_policy() -> dict[str, Any]:
         "max_iterations": DEFAULT_MAX_REVIEW_ITERATIONS,
         "allow_request_changes": True,
         "require_pre_commit_approval": True,
+        "auto_approve_council": False,
     }
 
 
@@ -296,6 +297,22 @@ class LoopOrchestrator:
             del self._workflows[wf_id]
             self._workflows[conversation["id"]] = wf
             self._persist()
+
+            # Auto-approve council if enabled in review policy AND server allows
+            policy = wf.get("review_policy", {})
+            if policy.get("auto_approve_council") and ALLOW_AUTO_COMMIT:
+                logger.info("Auto-approving council for %s", conversation["id"])
+                self._append_log(wf, "system", "Auto-approving council (advanced mode)")
+                try:
+                    await self.approve_council(
+                        conversation_id=conversation["id"],
+                        title=wf.get("title"),
+                        files_affected=wf.get("files_affected"),
+                        non_goals=wf.get("non_goals"),
+                    )
+                except Exception as exc:
+                    logger.exception("Auto-approve council failed: %s", exc)
+                    self._set_state(wf, WorkflowState.FAILED, reason=f"Auto-approve failed: {exc}")
         except Exception as exc:
             logger.exception("Council failed for %s", wf_id)
             self._set_state(wf, WorkflowState.FAILED, reason=f"Council failed: {exc}")
@@ -449,7 +466,7 @@ class LoopOrchestrator:
             return
 
         self._set_state(wf, WorkflowState.EXECUTOR_RUNNING)
-        cmd = ["python3", script, "--task-num", task_num]
+        cmd = ["python3", script, "--task-num", task_num, "--title", wf.get("title", f"Task {task_num}")]
         await self._run_subprocess(wf, cmd, cwd=target_path, timeout=DEFAULT_EXECUTOR_TIMEOUT, label="executor")
         if wf.get("state") == WorkflowState.FAILED.value:
             return
@@ -749,9 +766,24 @@ class LoopOrchestrator:
 
     def _git_changed_files(self, wf: dict[str, Any]) -> str:
         target_path = wf.get("export_result", {}).get("targetPath")
-        if not target_path:
+        task_num = wf.get("task_num")
+        if not target_path or not task_num:
             return wf.get("files_affected", "Unknown")
         try:
+            # Prefer files changed on the executor branch vs current base branch
+            branch = self._discover_task_branch(target_path, task_num)
+            if branch:
+                result = subprocess.run(
+                    ["git", "diff", f"HEAD..{branch}", "--name-only"],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+
+            # Fallback: working-tree changes relative to HEAD
             result = subprocess.run(
                 ["git", "diff", "--name-only", "HEAD"],
                 cwd=target_path,
@@ -761,6 +793,7 @@ class LoopOrchestrator:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
+
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=target_path,
@@ -863,34 +896,89 @@ class LoopOrchestrator:
         self._write_final_report_file(wf, report)
         return report
 
+    async def _ensure_git_repo(self, wf: dict[str, Any], target_path: str) -> None:
+        """Initialize git repo in target project if missing."""
+        git_dir = os.path.join(target_path, ".git")
+        if os.path.isdir(git_dir):
+            return
+        self._append_log(wf, "git", "Initializing git repository in target project")
+        await self._run_git_command(wf, target_path, ["git", "init", "-b", "main"])
+        await self._run_git_command(wf, target_path, ["git", "config", "user.email", "maw@localhost"])
+        await self._run_git_command(wf, target_path, ["git", "config", "user.name", "MAW"])
+        await self._run_git_command(wf, target_path, ["git", "add", "-A"])
+        await self._run_git_command(wf, target_path, ["git", "commit", "-m", "Initial commit"], allow_failure=True)
+
+    async def _run_git_command(
+        self,
+        wf: dict[str, Any],
+        cwd: str,
+        cmd: list[str],
+        allow_failure: bool = False,
+    ) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        out = stdout.decode() + stderr.decode()
+        self._append_log(wf, "git", f"$ {' '.join(cmd)}\n{out}")
+        if proc.returncode != 0 and not allow_failure:
+            raise RuntimeError(f"Git command failed: {' '.join(cmd)}: {out}")
+        return out
+
+    def _discover_task_branch(self, target_path: str, task_num: str) -> str | None:
+        """Find the executor-created branch for this task."""
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--format=%(refname:short)"],
+                cwd=target_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            prefix = f"task/task_{task_num}_"
+            branches = [b.strip() for b in result.stdout.splitlines() if b.strip().startswith(prefix)]
+            if not branches:
+                return None
+            if len(branches) == 1:
+                return branches[0]
+            # Multiple branches: prefer the one with latest commit
+            best_branch = None
+            best_time = ""
+            for branch in branches:
+                time_result = subprocess.run(
+                    ["git", "log", "-1", "--format=%ci", branch],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if time_result.returncode == 0 and time_result.stdout.strip() > best_time:
+                    best_time = time_result.stdout.strip()
+                    best_branch = branch
+            return best_branch
+        except Exception:
+            return None
+
     async def _perform_git_commit(self, wf: dict[str, Any]) -> None:
         target_path = wf["export_result"]["targetPath"]
         task_num = wf["task_num"]
         title = wf.get("title", f"Task {task_num}")
-        slug = slugify_title(title)
-        branch = f"task/task_{task_num}_{slug}"
         message = f"TASK-{task_num}: {title}"
 
-        commands = [
-            ["git", "add", "-A"],
-            ["git", "commit", "-m", message, "--allow-empty"],
-            ["git", "merge", branch, "--no-edit"],
-        ]
+        await self._ensure_git_repo(wf, target_path)
 
-        for cmd in commands:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=target_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            out = stdout.decode() + stderr.decode()
-            self._append_log(wf, "git", f"$ {' '.join(cmd)}\n{out}")
-            if proc.returncode != 0:
-                if cmd[1] == "merge":
-                    raise RuntimeError(f"Git merge failed: {out}")
-                raise RuntimeError(f"Git command failed: {' '.join(cmd)}: {out}")
+        branch = self._discover_task_branch(target_path, task_num)
+        if not branch:
+            raise RuntimeError(f"No executor branch found matching task/task_{task_num}_*")
+
+        await self._run_git_command(wf, target_path, ["git", "add", "-A"])
+        await self._run_git_command(wf, target_path, ["git", "commit", "-m", message, "--allow-empty"])
+        await self._run_git_command(wf, target_path, ["git", "merge", branch, "--no-edit"])
         wf["merge_output"] = wf.get("logs", [])[-1].get("line", "") if wf.get("logs") else ""
 
 
