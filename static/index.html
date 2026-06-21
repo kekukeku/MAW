@@ -6,6 +6,7 @@
   <title>MAW Autonomous Workflow Engine</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/ws-manager.js"></script>
   <style>
     :root {
       --bg: #0b0f19; --panel: #121829; --border: rgba(255,255,255,0.08);
@@ -253,7 +254,7 @@
     const API = window.location.origin;
     let config = {}, targets = [], setupStatus = {}, llmModels = {}, activeConversationId = null, activeTaskNum = null;
     const DIRECT_VENDORS = ['openai','anthropic','google','deepseek','kimi','qwen','grok'];
-    let activeWorkflowId = null, ws = null, lastLogCount = 0, currentWorkflow = null;
+    let activeWorkflowId = null, mawWs = null, lastLogCount = 0, currentWorkflow = null;
 
     const STATE_MAP = {
       IDLE: 'COUNCIL_RUNNING', COUNCIL_RUNNING: 'COUNCIL_RUNNING',
@@ -663,15 +664,22 @@
       updatePipeline({ state: 'FAILED', review_iterations: 0 });
     }
 
+    function ensureMawWebSocket() {
+      if (mawWs) return;
+      mawWs = new MawWebSocket({
+        onMessage: (data) => {
+          if (activeTaskNum && data.task_num && data.task_num !== activeTaskNum) return;
+          if (data.type === 'log' && data.entry) appendLog(data.entry);
+          if (data.workflow) updateFromWorkflow(data.workflow);
+        },
+      });
+      window.addEventListener('beforeunload', () => mawWs.close());
+    }
+
     function connectWebSocket(taskNum) {
-      if (ws) ws.close();
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws/workflow/${taskNum}`);
-      ws.onmessage = (ev) => {
-        const data = JSON.parse(ev.data);
-        if (data.type === 'log') appendLog(data.entry);
-        if (data.workflow) updateFromWorkflow(data.workflow);
-      };
+      ensureMawWebSocket();
+      mawWs.connect();
+      mawWs.subscribe(taskNum);
     }
 
     function appendLog(entry) {

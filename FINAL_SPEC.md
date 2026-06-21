@@ -30,7 +30,7 @@
 | **組織者** | `loop_orchestrator.py` | 狀態機、子程序調度、超時/迴圈限制、崩潰恢復 |
 | **董事會成員** | OpenRouter 多模型 | Stage 1 獨立作答、Stage 2 匿名排名 |
 | **董事長（開會）** | Chairman 模型 | Stage 3 彙整可執行計畫與驗收標準 |
-| **執行者** | 目標專案 `trigger_antigravity.py` | 在目標 repo 實作程式碼 |
+| **執行者** | 目標專案 `MAW_workflow/scripts/trigger_executor.py` | 在目標 repo 實作程式碼（可選 Antigravity、Codex 等 GUI/TUI agent） |
 | **審查者** | 目標專案 `trigger-review.js` | 程式碼審查，產出 `REVIEWS/review_NNN.md` |
 | **董事長（結束）** | Chairman 模型 | Commit 後對比需求與變更，撰寫完成報告 |
 
@@ -109,7 +109,7 @@ graph TD
 | 原則 | 說明 |
 |------|------|
 | **自含董事會** | Karpathy 三階段邏輯內嵌於 `MAW/council/`，不依賴外部 Karpathy 專案 |
-| **目標專案擁有執行腳本** | `trigger_antigravity.py`、`trigger-review.js`、`route-review-decision.js` 留在目標專案；MAW 僅調用 |
+| **目標專案擁有執行腳本** | `trigger_executor.py`、`trigger-review.js`、`route-review-decision.js` 留在 `<target>/MAW_workflow/`；MAW 僅調用 |
 | **本地紀錄不入 Git** | `TASKS/`、`PLANNING/`、`REVIEWS/`、`AGENT_STATE.md` 在目標專案 `.gitignore` 中排除 |
 | **用戶控制董事會** | UI 可選董事會成員模型與董事長模型 |
 | **安全預設** | 雙人工關卡、迴圈上限、子程序超時、優雅失敗狀態 |
@@ -124,26 +124,26 @@ graph TD
 
 ```
 <target-project>/
-├── AGENT_STATE.md              # 中央任務登錄簿
-├── TASKS/                      # 任務 markdown
-├── PLANNING/                   # 董事會紀錄與最終報告
-├── REVIEWS/                    # 審查報告
-├── scripts/
-│   └── trigger_antigravity.py  # 啟動執行者
-├── agent-runner/
-│   ├── trigger-review.js       # 啟動審查者
-│   └── route-review-decision.js # 解析審查決策（輸出結構化 JSON）
-└── .gitignore                  # 必須忽略 MAW 產生的檔案
+├── .gitignore                  # 必須忽略 MAW_workflow/
+└── MAW_workflow/
+    ├── AGENT_STATE.md          # 中央任務登錄簿
+    ├── TASKS/                  # 任務 markdown
+    ├── PLANNING/               # 董事會紀錄與最終報告
+    ├── REVIEWS/                # 審查報告
+    ├── scripts/
+    │   └── trigger_executor.py # 啟動執行者（由 Panel 0 install-adapters 安裝）
+    └── agent-runner/
+        ├── trigger-review.js       # 啟動審查者
+        └── route-review-decision.js  # 解析審查決策（輸出結構化 JSON）
 ```
+
+程式碼變更發生在專案根目錄；狀態檔與任務紀錄一律在 `MAW_workflow/`。
 
 ### 6.1 必要 `.gitignore` 條目
 
 ```gitignore
 # MAW-generated local records (do not commit)
-AGENT_STATE.md
-TASKS/
-PLANNING/
-REVIEWS/
+MAW_workflow/
 *.tmp
 .maw_export.lock
 ```
@@ -176,9 +176,18 @@ MAW/
 ├── data/
 │   ├── conversations/            # 董事會 JSON 紀錄
 │   └── workflows.json            # 工作流狀態持久化
+├── maw_paths.py                  # get_project_root / get_workflow_root
+├── setup_api.py                  # Panel 0 setup / preflight / scaffold
+├── adapters/                     # agent registry + install-adapters 範本
+├── council/
+│   ├── llm_provider.py           # LiteLLM / OpenRouter / Direct 三模式
+│   ├── direct_resolver.py        # Direct 七廠自動 endpoint 路由
+│   └── vendors.json
 ├── template_target_project/      # 可運行的 mock 目標專案範本
 ├── static/
-│   └── index.html                # 五面板工作流 UI
+│   ├── index.html                # Panel 0–5 單頁 UI
+│   └── ws-manager.js             # WebSocket 單連線訂閱管理器
+├── install.command / MAW.command
 ├── start.sh
 └── FINAL_SPEC.md                 # 本文件
 ```
@@ -246,7 +255,15 @@ FINAL_REPORT_PRESENTED
 
 輸出 JSON schema 與既有 `export.py` 相容：`stage1`、`stage2`、`stage3`、`metadata`。
 
-**Mock mode**：`MAW_MOCK_MODE=1` 或請求 `mock: true` 時回傳確定性假資料，不呼叫 OpenRouter。
+**LLM 供應商**（`council/llm_provider.py`）：
+
+| 模式 | 環境變數 | 說明 |
+|------|----------|------|
+| **LiteLLM**（預設） | `LLM_PROVIDER=litellm` | 透過本地 LiteLLM proxy |
+| **OpenRouter** | `LLM_PROVIDER=openrouter` | 直接呼叫 OpenRouter |
+| **Direct** | `LLM_PROVIDER=direct` | 七廠直連；`direct_resolver.py` 自動國內/國際 endpoint |
+
+**Mock mode**：僅伺服器 `MAW_MOCK_MODE=1`（無 UI 開關）；或請求 `mock: true` 時回傳確定性假資料。
 
 ### 9.2 `export.py` — 原子匯出
 
@@ -295,18 +312,44 @@ FINAL_REPORT_PRESENTED
 | POST | `/api/maw/workflow/{task_num}/cancel` | 取消工作流 |
 | POST | `/api/maw/export` | 舊版匯出 API（向後相容） |
 
+#### Setup API（Panel 0）
+
+| Method | Path | 說明 |
+|--------|------|------|
+| GET | `/api/setup/status` | 目前設定與健康狀態 |
+| GET | `/api/setup/agents` | 六種 GUI/TUI agent 清單 |
+| GET | `/api/setup/llm-models` | 模型清單與啟用狀態 |
+| GET | `/api/setup/preflight` | 啟動工作流前檢查 |
+| POST | `/api/setup/save` | 儲存 LLM / agent / 目標路徑 |
+| POST | `/api/setup/scaffold` | 一鍵建立 `MAW_workflow/` |
+| POST | `/api/setup/install-adapters` | 安裝 executor/reviewer 腳本 |
+| POST | `/api/setup/test-llm` | 測試 LLM 連線 |
+
 #### WebSocket
 
 | Path | 說明 |
 |------|------|
-| `WS /ws/workflow/{task_num}` | 即時 log + 狀態更新（增量，避免重複 append） |
+| `WS /ws/maw`（或 `/ws/workflow/global`） | **建議**：單連線 + `subscribe` 切換任務，Panel 切換不斷線 |
+| `WS /ws/workflow/{task_num}` | 向後相容：每任務獨立連線 |
 
-### 9.5 `static/index.html` — 五面板 UI
+**訂閱協議**（`/ws/maw`）：
+
+| 訊息 | 方向 | 說明 |
+|------|------|------|
+| `{"action":"subscribe","task_num":"002"}` | 客戶端→伺服器 | 切換訂閱任務 |
+| `{"type":"log","task_num":"002","entry":{...}}` | 伺服器→客戶端 | 增量 log |
+| `{"type":"status","task_num":"002","workflow":{...}}` | 伺服器→客戶端 | 狀態更新 |
+| `{"action":"ping"}` / `{"type":"pong"}` | 雙向 | 心跳（約 25s） |
+
+前端 `static/ws-manager.js`：`MawWebSocket` 維持單連線；切換任務呼叫 `subscribe()`；斷線指數退避重連並恢復上次訂閱。
+
+### 9.5 `static/index.html` — Panel 0–5 單頁 UI
 
 玻璃擬物風（Glassmorphism）儀表板：
 
 | 面板 | 內容 |
 |------|------|
+| **0. 設定與狀態** | LLM 三模式、七廠 Key、健康燈、Scaffold、agent 安裝、preflight |
 | **1. 董事會建立** | Prompt、模型多選、董事長下拉、審查政策、目標專案 |
 | **2. 董事會結果** | Stage 1 各模型回答、Stage 2 **匿名**排名、Stage 3 董事長決議、Approve/Reject |
 | **3. 管線追蹤器** | `董事會 → 執行者 → 審查 → (修復迴圈) → 提交審批 → 完成`；當前節點高亮動畫 |
@@ -333,7 +376,7 @@ UI 行為要求：
 
 ### 10.2 人工關卡 #1
 
-- **Approve**：`export_to_target()` → 觸發 `python3 scripts/trigger_antigravity.py --task-num NNN` → `EXECUTOR_RUNNING`
+- **Approve**：`export_to_target()` → 觸發 `python3 MAW_workflow/scripts/trigger_executor.py --task-num NNN` → `EXECUTOR_RUNNING`
 - **Reject**：→ `FAILED`
 
 ### 10.3 執行者階段
@@ -448,7 +491,9 @@ Git 安全約束：禁止 force-push、rebase、分支刪除。
 
 ### 13.4 WebSocket 測試
 
-連線 `/ws/workflow/{task_num}`，斷言 `log` / `status` 訊息格式與增量行為。
+- 連線 `/ws/workflow/{task_num}`，斷言 `log` / `status` 訊息格式與增量行為（向後相容）。
+- 連線 `/ws/maw`，送出 `subscribe`，斷言 `task_num` 欄位與初始 `status`。
+- 送出 `ping`，斷言 `pong` 回應。
 
 ### 13.5 手動驗證（真實目標專案）
 

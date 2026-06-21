@@ -11,7 +11,9 @@ User Request → AI Council → Human Approval → Export → Executor → Revie
 - **Self-contained**: No external Karpathy project needed. The council engine lives inside `MAW/council/`.
 - **User-controlled council**: Choose council members and chairman models via the UI.
 - **Safety-first defaults**: Two human approval gates (post-council and pre-commit) with optional advanced auto-mode.
-- **Real-time visibility**: WebSocket streaming of executor/reviewer logs.
+- **Real-time visibility**: Single persistent WebSocket (`/ws/maw`) with task subscribe — no reconnect when switching panels or tasks.
+- **Flexible LLM routing**: LiteLLM (default), OpenRouter, or Direct API with auto CN/intl endpoint routing for Kimi/Qwen.
+- **Panel 0 setup**: One-page UI for LLM keys, project health, scaffold, and agent installation before launching workflows.
 - **Portable target projects**: Executor/reviewer scripts stay in the target repo; MAW only invokes them.
 - **Mock mode**: Test the full loop without spending API credits.
 
@@ -37,9 +39,10 @@ Double-click **`MAW.command`** (or run `./MAW.command`) — Panel 0 opens every 
 `.env` is created on first install. Key variables:
 
 ```env
-LLM_PROVIDER=litellm
+LLM_PROVIDER=litellm          # litellm | openrouter | direct
 LITELLM_API_BASE=http://localhost:4000
 OPENROUTER_API_KEY=sk-or-...
+# Direct mode: set per-vendor keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 TARGET_PROJECT_PATH=/path/to/your/target-project
 MAW_MOCK_MODE=0
 ALLOW_AUTO_COMMIT=false
@@ -102,10 +105,12 @@ Open http://localhost:8002.
 
 ```
 MAW/
+├── adapters/             # agent registry + install-adapters templates
 ├── council/              # embedded Karpathy 3-Stage council
 │   ├── config.py
 │   ├── council.py
-│   ├── openrouter.py
+│   ├── llm_provider.py   # LiteLLM / OpenRouter / Direct
+│   ├── direct_resolver.py
 │   └── storage.py
 ├── data/
 │   ├── conversations/    # council JSON records
@@ -113,10 +118,27 @@ MAW/
 ├── export.py             # atomic task export to target project
 ├── loop_orchestrator.py  # workflow state machine
 ├── main.py               # FastAPI REST + WebSocket API
-├── static/index.html     # 5-panel workflow dashboard
+├── setup_api.py          # Panel 0 setup / preflight / scaffold
+├── static/
+│   ├── index.html        # Panel 0–5 single-page dashboard
+│   └── ws-manager.js     # persistent WebSocket subscribe manager
 ├── template_target_project/  # runnable mock target project
 └── tests/
 ```
+
+## WebSocket
+
+The UI uses a single connection to `WS /ws/maw` (alias: `/ws/workflow/global`):
+
+```json
+{"action":"subscribe","task_num":"002"}
+```
+
+Server pushes `{"type":"log","task_num":"002",...}` and `{"type":"status",...}`. Heartbeat: `{"action":"ping"}` → `{"type":"pong"}`. The legacy per-task endpoint `WS /ws/workflow/{task_num}` remains for backward compatibility.
+
+## Agents
+
+Six GUI/TUI agents (executor and reviewer use the same list): `openwork`, `grok_build`, `antigravity`, `codex`, `claude_cowork`, `custom`. Install via **Panel 0 → Install Adapters**.
 
 ## Testing
 

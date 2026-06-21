@@ -75,6 +75,48 @@ class TestWebSocket(unittest.TestCase):
             self.assertIn("logs", msg["workflow"])
             ws.close()
 
+    def test_global_websocket_subscribe(self):
+        async def _setup_workflow():
+            with patch("export.load_targets", return_value=self.targets_config), \
+                 patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("export.get_conversations_dir", return_value=self.conv_dir):
+                await self.orch.start_council(prompt="global ws test", target_key="mock", mock=True)
+                conv_id = None
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    for w in self.orch.list_workflows():
+                        if w.get("conversation_id") and w["state"] == WorkflowState.COUNCIL_PENDING_APPROVAL.value:
+                            conv_id = w["conversation_id"]
+                            break
+                    if conv_id:
+                        break
+                await self.orch.approve_council(conv_id)
+                return "001"
+
+        task_num = asyncio.run(_setup_workflow())
+        client = TestClient(app)
+        with client.websocket_connect("/ws/maw") as ws:
+            ws.send_json({"action": "subscribe", "task_num": task_num})
+            msg = ws.receive_json()
+            self.assertEqual(msg["type"], "status")
+            self.assertEqual(msg["task_num"], task_num)
+            self.assertEqual(msg["workflow"]["task_num"], task_num)
+            self.assertIn("logs", msg["workflow"])
+
+    def test_global_websocket_ping_pong(self):
+        client = TestClient(app)
+        with client.websocket_connect("/ws/maw") as ws:
+            ws.send_json({"action": "ping"})
+            msg = ws.receive_json()
+            self.assertEqual(msg["type"], "pong")
+
+    def test_global_alias_endpoint(self):
+        client = TestClient(app)
+        with client.websocket_connect("/ws/workflow/global") as ws:
+            ws.send_json({"action": "ping"})
+            msg = ws.receive_json()
+            self.assertEqual(msg["type"], "pong")
+
 
 if __name__ == "__main__":
     unittest.main()

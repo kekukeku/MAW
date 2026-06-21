@@ -7,6 +7,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from export import load_targets, validate_target, export_to_target
@@ -57,6 +58,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
 class ExportRequest(BaseModel):
@@ -321,6 +326,46 @@ async def cancel_workflow(task_num: str):
         return await orchestrator.cancel_workflow(task_num)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+async def _handle_global_ws_message(websocket: WebSocket, payload: dict) -> None:
+    action = payload.get("action")
+    if action == "ping":
+        await websocket.send_json({"type": "pong"})
+        return
+    if action == "subscribe":
+        task_num = str(payload.get("task_num", "")).strip()
+        if not task_num:
+            return
+        await orchestrator.subscribe_global_ws(websocket, task_num)
+
+
+async def _maw_global_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    await orchestrator.register_global_ws(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                await _handle_global_ws_message(websocket, payload)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await orchestrator.unregister_global_ws(websocket)
+
+
+@app.websocket("/ws/maw")
+async def maw_global_websocket(websocket: WebSocket):
+    await _maw_global_websocket(websocket)
+
+
+@app.websocket("/ws/workflow/global")
+async def maw_global_websocket_alias(websocket: WebSocket):
+    await _maw_global_websocket(websocket)
 
 
 @app.websocket("/ws/workflow/{task_num}")
