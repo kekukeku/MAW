@@ -1,9 +1,32 @@
 # MAW Context-Aware Council 大改造計劃
 
-> **版本**：0.1  
-> **狀態**：架構改造計劃  
-> **目標階段**：Phase 6 - Context-Aware Council  
+> **版本**：0.2
+> **狀態**：架構改造計劃（review 修訂版）
+> **目標階段**：Phase 6 - Context-Aware Council
 > **核心原則**：盡量不改變使用者感受到的 UI/UX 流程，但徹底修正 Council 盲眼決策問題。
+
+---
+
+## 0. Review 後定案
+
+經過小 A / 小 B / 小 O 對 v0.1 計劃的評估後，整體方向維持不變，但第一批實作範圍需要收斂。
+
+本修訂版採用以下決策：
+
+1. **保留原計劃作為 north star**：L0/L1/L2/L3 分層、provenance、安全邊界、Gate #1 context summary 都仍是最終方向。
+2. **第一刀只做 Phase 6a**：先完成 L0 Blueprint、prompt injection、conversation / PLANNING provenance、auto-approve guard 與測試。
+3. **Phase 6a 不改 UI 主體**：不做 context bar、preview API、file selector、Scout 或 Explorer；使用者仍只感覺按下 Start Council 後系統多做了一段準備。
+4. **不新增公開 workflow 狀態**：Phase 6a 暫時不加入公開 `CONTEXT_GATHERING` enum，context gathering 包在 `COUNCIL_RUNNING` 裡，以 logs 呈現。
+5. **Stage 1/2/3 都必須使用 context envelope**：不能只讓 Stage 1 看 context，Stage 2 ranking 與 Stage 3 synthesis 也要基於同一份 target context。
+6. **MVP 預算下修**：Phase 6a 先用 40K-50K chars 的總預算，避免三階段 Council 成本暴增。
+7. **避免新增強依賴**：Phase 6a 不依賴 `rg`、embedding database 或新 UI 套件；`.gitignore` 可用 `git check-ignore` 輔助，失敗時 fallback 到內建 denylist。
+8. **Context 要 task-scoped**：若要給 Executor / Reviewer 使用，不寫全域 `MAW_workflow/CONTEXT.json`，而是保存在 `PLANNING/council_NNN.json`，必要時再輸出 `PLANNING/context_NNN.json`。
+
+一句話：
+
+```text
+第一版先讓 Council 不再盲眼，且結果可審計；之後再做更聰明的檔案選擇與 UI 輔助。
+```
 
 ---
 
@@ -79,9 +102,9 @@ Context-Aware Council
 
 新增功能應該表現為「輕量輔助」：
 
-- Start Council 前顯示 context 預覽。
-- 可以展開查看 Council 將看到哪些檔案。
-- 可以手動附加檔案，但不是每次都強迫使用者操作。
+- Phase 6a 不新增 UI 控制，只在 existing running/log area 顯示 context gathering 進度。
+- Phase 6b 之後才在 Start Council 前顯示 context 預覽。
+- Phase 6b/6c 之後才允許展開查看 Council 將看到哪些檔案與手動附加檔案。
 - 自動掃描失敗時以清楚錯誤提示阻止盲眼 Council，而不是悄悄退回舊模式。
 
 ### 2.3 非目標
@@ -146,7 +169,7 @@ L3 Explorer Brief  未來深度調研
 IDLE -> COUNCIL_RUNNING -> COUNCIL_PENDING_APPROVAL
 ```
 
-內部可以新增細分狀態：
+長期可以新增細分狀態：
 
 ```text
 IDLE
@@ -164,11 +187,22 @@ IDLE
 
 而不是讓使用者感覺多了一個工作流步驟。
 
+但 **Phase 6a 暫不新增公開 workflow enum**。第一版先把 context gathering 包在既有 `COUNCIL_RUNNING` 裡，降低 `resume_unfinished()`、WebSocket、前端狀態 badge 的同步風險。
+
 ---
 
 ## 4. 目標架構
 
 ### 4.1 新增模組
+
+Phase 6a 只新增：
+
+```text
+MAW/
+└── project_context.py              # L0 blueprint、budget、prompt envelope、summary helpers
+```
+
+後續 Phase 6b+ 若功能變多，再拆成：
 
 ```text
 MAW/
@@ -180,13 +214,7 @@ MAW/
 └── tests/
 ```
 
-若想保持檔案數量較少，MVP 可以先只新增：
-
-```text
-project_context.py
-```
-
-並在內部拆 helper functions。等功能成熟後再分檔。
+這樣第一個 PR 的 blast radius 最小，也方便測試 reviewer 聚焦在「Council 是否真的收到 context」。
 
 ### 4.2 Context Pack 資料結構
 
@@ -203,7 +231,7 @@ project_context.py
       "respectGitignore": true,
       "excludeSecrets": true,
       "excludeWorkflowDir": true,
-      "maxTotalChars": 80000,
+      "maxTotalChars": 50000,
       "maxFileChars": 12000
     },
     "summary": {
@@ -243,6 +271,8 @@ project_context.py
 }
 ```
 
+Phase 6a 只要求 `blueprint`、`summary`、`policy`、`accessIssues` 穩定存在；`files` 可先為空陣列，等 L1/L2 實作後再填入 user-selected / scout files。
+
 ### 4.3 Council Prompt 結構
 
 `run_council()` 不應直接把 raw user prompt 傳給模型，而是先建立正式 prompt envelope：
@@ -277,6 +307,12 @@ project_context.py
 ```
 
 這個 envelope 應該由 `project_context.py` 或 `council/prompt_builder.py` 統一產生，不要散落在 orchestrator 裡。
+
+Phase 6a 必須確保三個階段都以 context-aware request 為基礎：
+
+- **Stage 1**：每個 council member 收到 context envelope + original user request。
+- **Stage 2**：ranking prompt 也要包含 context envelope 或等價 context summary，避免評委只根據 raw prompt 排名。
+- **Stage 3**：Chairman synthesis 要看到 context、Stage 1 回答與 Stage 2 排名，且明確要求「若只有 L0，不得編造未提供的具體檔案內容」。
 
 ---
 
@@ -313,7 +349,7 @@ project_context.py
 
 ### 5.2 L1 User-Selected Files
 
-**狀態**：P1 黃金方案。
+**狀態**：P1 黃金方案，Phase 6a 不做。
 
 UI 以輕量方式加入：
 
@@ -339,15 +375,17 @@ Context: Blueprint ready · 3 suggested files · Add files
 
 ### 5.3 L2 Scout Files
 
-**狀態**：P2 自動化層。
+**狀態**：P2 自動化層，Phase 6a 不做。
 
 先使用便宜、可解釋的方式：
 
 - 從 user prompt 抽取 filename-like token。
-- 用 `rg --files` 找檔名匹配。
-- 用 `rg` 搜關鍵字命中。
+- 用純 Python `os.walk` / `fnmatch` 找檔名匹配。
+- 用純 Python 輕量文字搜尋做關鍵字命中。
 - README/package scripts 命中的入口檔加權。
 - 最近修改檔案可作為弱訊號，但不要過度依賴。
+
+`rg` / ripgrep 可作為未來 optional acceleration，但不作為必要依賴；CI 或使用者環境沒有 `rg` 時，功能不能失效。
 
 排序分數範例：
 
@@ -388,7 +426,7 @@ Explorer 是唯讀調研 agent，不是 executor。
 - 跑高風險命令
 - 自動把不透明結論當成事實
 
-MVP 不需要 L3。先把 L0/L1/L2 做好。
+MVP 不需要 L3。先把 L0 做穩，再依序補 L1/L2。
 
 ---
 
@@ -412,14 +450,26 @@ MVP 不需要 L3。先把 L0/L1/L2 做好。
 
 ### 6.2 UI 最小新增元素
 
-在 Panel 1 任務輸入框下方新增一個 compact context bar：
+Phase 6a 不新增 Panel 1 控制項，不新增 file selector，不新增 preview API。使用者體感維持：
+
+```text
+填任務 -> Start Council -> 系統顯示圓桌會議準備/進行中 -> Gate #1
+```
+
+Phase 6a 僅透過既有狀態文字或 workflow logs 顯示：
+
+```text
+圓桌會議準備中：正在讀取目標專案上下文...
+```
+
+Phase 6b 之後才在 Panel 1 任務輸入框下方新增 compact context bar：
 
 ```text
 Context: Blueprint ready · 3 suggested files · 42K chars
 [Preview] [Add files] [Auto-detect]
 ```
 
-狀態：
+Phase 6b+ 狀態：
 
 - `Not scanned yet`
 - `Scanning...`
@@ -432,7 +482,9 @@ Context: Blueprint ready · 3 suggested files · 42K chars
 
 ### 6.3 Gate #1 增加 Context 摘要
 
-Council result review panel 中新增一個可折疊區塊：
+Phase 6a 先在 `PLANNING/council_NNN.md` 和 conversation JSON 中保存 context summary；前端 Gate #1 可先不新增可視區塊。
+
+Phase 6b 之後，Council result review panel 中新增一個可折疊區塊：
 
 ```text
 Council Context
@@ -453,6 +505,7 @@ Council Context
 - no fatal access issues
 - context pack 至少有 L0
 - 若 user request 明確提到某檔名但該檔未找到，禁止 auto approve
+- 若 context pack 只有 L0，Phase 6a 預設仍允許人工 Gate #1，但不鼓勵無人監督 auto approve；是否允許需由 review policy 明確開啟。
 
 否則自動降級為需要 Gate #1 人工審批，並顯示原因。
 
@@ -468,7 +521,31 @@ IDLE
   -> COUNCIL_PENDING_APPROVAL
 ```
 
-### 7.2 建議內部狀態
+### 7.2 Phase 6a 狀態策略
+
+Phase 6a 不新增公開狀態 enum。流程維持：
+
+```text
+IDLE
+  -> COUNCIL_RUNNING
+  -> COUNCIL_PENDING_APPROVAL
+```
+
+但 `COUNCIL_RUNNING` 內部先做：
+
+```text
+build_context_pack()
+  -> run_council(context_pack=...)
+```
+
+好處：
+
+- 不需要第一版同步修改 `resume_unfinished()`。
+- 不需要第一版修改前端狀態 badge。
+- 不需要擴大 WebSocket 狀態相容面。
+- context gathering 失敗仍可把 workflow 設為 `FAILED`，不會 fallback 到 blind council。
+
+### 7.3 後續可選內部狀態
 
 ```text
 IDLE
@@ -492,15 +569,14 @@ CONTEXT_GATHERING = "CONTEXT_GATHERING"
 
 不用新增 `CONTEXT_READY` 狀態也可以，因為 context ready 後立即進 Council。
 
-### 7.3 WebSocket / Logs
+### 7.4 WebSocket / Logs
 
 新增 log lines：
 
 ```text
 [context] Scanning target project blueprint...
 [context] Included README.md (2000 chars)
-[context] Suggested 4 files from prompt keywords
-[context] Context pack ready: 52K chars, 6 files
+[context] Context pack ready: 42K chars, L0 blueprint only
 [council] Starting Stage 1 with context pack v1
 ```
 
@@ -512,7 +588,9 @@ UI 顯示可以仍然是「圓桌會議準備中」。
 
 ### 8.1 `POST /api/maw/conversations/new`
 
-新增 request fields：
+Phase 6a 盡量不改 request shape；後端可直接根據 `targetKey` 與 `prompt` 自動產生 L0 context pack。
+
+Phase 6c 才新增 request fields：
 
 ```python
 class NewConversationRequest(BaseModel):
@@ -530,6 +608,8 @@ class NewConversationRequest(BaseModel):
 ```
 
 ### 8.2 新增 Context Preview API
+
+**狀態**：Phase 6b，不屬於 Phase 6a。
 
 ```text
 POST /api/maw/context/preview
@@ -575,6 +655,8 @@ Response：
 ```
 
 ### 8.3 新增檔案列表 API
+
+**狀態**：Phase 6c，不屬於 Phase 6a。
 
 ```text
 GET /api/maw/targets/{targetKey}/files
@@ -651,6 +733,24 @@ assistant message metadata 新增：
 ```
 
 原本 Stage 1/2/3 往後順延。
+
+`PLANNING/council_NNN.json` 也必須保存完整或可重建的 `context_pack`。若後續需要讓 Executor / Reviewer 更方便讀取，可額外輸出：
+
+```text
+PLANNING/context_NNN.json
+```
+
+不要輸出全域：
+
+```text
+MAW_workflow/CONTEXT.json
+```
+
+原因：
+
+- 多任務並行時會覆蓋。
+- Executor / Reviewer 都以 task number 工作，context 也應該 task-scoped。
+- `PLANNING/council_NNN.json` 已是該 task 的 provenance 主檔，context 應與它保持一一對應。
 
 ### 9.3 Task Markdown
 
@@ -743,20 +843,29 @@ Context gathering 階段不得：
 
 MVP 建議先用 char budget，不必先做 tokenizer。
 
-預設：
+Phase 6a 預設：
 
 ```text
-maxTotalChars: 80000
+maxTotalChars: 50000
 maxFileChars: 12000
-maxTreeChars: 12000
-maxReadmeChars: 6000
-maxDependencyFileChars: 8000
-maxScoutFiles: 6
+maxTreeChars: 10000
+maxReadmeChars: 4000
+maxDependencyFileChars: 6000
+maxTreeEntries: 200
+maxScoutFiles: 0
 ```
+
+`maxScoutFiles` 在 Phase 6a 固定為 0，等 Phase 6d 才打開。若實測三階段成本仍偏高，可先把 `maxTotalChars` 下修到 40000。
 
 優先級：
 
 ```text
+Phase 6a:
+1. dependency / test script summary
+2. README summary
+3. directory tree
+
+Phase 6c+:
 1. User-selected files
 2. Direct filename matches from prompt
 3. Scout source files
@@ -770,6 +879,7 @@ maxScoutFiles: 6
 - 手選檔案可截斷，但要在 UI 和 markdown 明確標記。
 - 檔案過大時保留 head + tail，中間標記 omitted。
 - 不要靜默截斷。
+- 若未來讀取 source file，優先避免切斷在語意不清的位置；可以加入 class/function outline 或明確 omitted marker，但不要求 Phase 6a 完成 AST-aware truncation。
 
 ---
 
@@ -779,7 +889,7 @@ maxScoutFiles: 6
 
 目標：
 
-從完全盲眼變成至少知道專案形狀。
+從完全盲眼變成至少知道專案形狀；不改 UI 主流程。
 
 工作項：
 
@@ -793,37 +903,59 @@ maxScoutFiles: 6
 - `run_council()` 接收 context pack。
 - Stage 1/2/3 prompt 使用 context envelope。
 - conversation JSON 保存 context pack。
-- `PLANNING/council_NNN.md` 輸出 context summary。
+- `PLANNING/council_NNN.md` 與 `PLANNING/council_NNN.json` 輸出 context summary / context pack。
+- auto-approve context guard 第一版同步加入。
+- 測試確保 mock/live prompt path 不再是 prompt-only。
 
 驗收：
 
 - Mock council conversation JSON 含 `context_pack`。
 - Live council Stage 1 prompt 不再只有 user prompt。
+- Stage 2 ranking prompt 不再只有 raw prompt。
+- Stage 3 synthesis prompt 明確知道 context boundary。
 - target project 沒有 README 也可正常產生 blueprint。
 - `MAW_workflow/` 不會被讀進 context。
 - context gathering 失敗不會默默 fallback 到 blind council。
+- Phase 6a 不新增 visible UI 控制，不新增 preview API。
+- `auto_approve_council` 在 context 不 ready 時會降級為人工 Gate #1。
 
-### Phase 6b - Context Preview + UI Minimal Bar
+### Phase 6b - Context Summary Visibility
 
 目標：
 
-讓使用者在不改變主流程的前提下看到 Council 會看什麼。
+讓使用者在不改變主流程的前提下，於 Gate #1 看見 Council 依據。
+
+工作項：
+
+- Gate #1 顯示 context summary。
+- workflow details / conversation details 可展開 context provenance。
+- logs 顯示 context warnings。
+
+驗收：
+
+- 不使用新功能時，原本 Start Council 體感仍順。
+- 使用者可展開查看檔案清單。
+- context 太大或只有 L0 時有清楚提示。
+
+### Phase 6c - Context Preview API + UI Minimal Bar
+
+目標：
+
+讓使用者可在 Start Council 前預覽，但不強迫新增操作。
 
 工作項：
 
 - 新增 `/api/maw/context/preview`
 - Panel 1 新增 compact context bar。
 - target 或 prompt 改變時 debounce preview。
-- Start Council 時使用 preview 結果或重新產生 context。
-- Gate #1 顯示 context summary。
+- Start Council 時重新產生 context pack，preview 只作為提示，不作為唯一真相。
 
 驗收：
 
-- 不使用新功能時，原本 Start Council 體感仍順。
-- 使用者可展開查看檔案清單。
-- context 太大時有清楚提示。
+- preview 失敗不會直接啟動 blind council。
+- context bar 不破壞現有 layout。
 
-### Phase 6c - L1 手動 Context Files
+### Phase 6d - L1 手動 Context Files
 
 目標：
 
@@ -844,7 +976,7 @@ maxScoutFiles: 6
 - 非法路徑被拒絕。
 - 大檔案會標記截斷。
 
-### Phase 6d - L2 Scout 自動推薦
+### Phase 6e - L2 Scout 自動推薦
 
 目標：
 
@@ -854,7 +986,7 @@ maxScoutFiles: 6
 
 - 實作 prompt keyword extraction。
 - 實作 filename/path matching。
-- 實作 `rg` text matching。
+- 實作純 Python text matching。
 - top-N scoring。
 - UI 顯示 suggested files，可取消。
 
@@ -863,23 +995,6 @@ maxScoutFiles: 6
 - prompt 提到 `authentication.py` 時能命中該檔。
 - prompt 提到 `token expiry` 時能找到 auth/token 相關檔案。
 - generated/vendor/build 檔案不會被推薦。
-
-### Phase 6e - Auto-approve Context Guard
-
-目標：
-
-避免全自動模式跳過一份 context 不足的 plan。
-
-工作項：
-
-- 若 context status 非 ready，禁止 auto approve。
-- 若 prompt 明確提到的檔案不存在，禁止 auto approve。
-- 若 context 只有 L0，auto approve 預設禁止，除非 review policy 明確允許。
-
-驗收：
-
-- auto approve 不再對 context-insufficient council 生效。
-- UI / logs 顯示降級原因。
 
 ### Phase 6f - Explorer Brief Prototype
 
@@ -905,21 +1020,24 @@ maxScoutFiles: 6
 
 ### 13.1 Unit Tests
 
-新增測試：
+Phase 6a 新增測試：
 
 - `test_project_context.py`
-- `test_context_budget.py`
-- `test_context_scout.py`
 
 覆蓋：
 
 - excludes `.git`, `MAW_workflow`, `node_modules`
-- respects `.gitignore`
+- respects `.gitignore` when `git check-ignore` is available, otherwise falls back safely
 - rejects path traversal
 - rejects absolute paths
 - truncates large files
-- preserves user-selected priority
 - produces stable context schema
+- uses a temporary target fixture, not the developer's real projects
+
+Phase 6d+ 才新增：
+
+- `test_context_budget.py`
+- `test_context_scout.py`
 
 ### 13.2 Council Tests
 
@@ -935,6 +1053,8 @@ maxScoutFiles: 6
 - `_run_council_live()` prompt contains Target Project Context。
 - Stage 2 prompt includes original context-aware request, not raw prompt only。
 - Stage 3 synthesis includes context-aware deliberation。
+- `LoopOrchestrator._run_council_task()` gathers context before calling `run_council()`。
+- interrupted `COUNCIL_RUNNING` workflows can safely rebuild context on resume。
 
 ### 13.3 Export Tests
 
@@ -947,10 +1067,13 @@ maxScoutFiles: 6
 - council markdown includes context summary。
 - council JSON includes context pack。
 - task markdown files affected can be derived from context pack。
+- no global `MAW_workflow/CONTEXT.json` is required for Phase 6a。
 
 ### 13.4 UI Smoke
 
-手動或 Playwright：
+Phase 6a 不要求 UI smoke，因為不新增 UI 控制。
+
+Phase 6b+ 手動或 Playwright：
 
 - Start Council 仍可一鍵執行。
 - Context bar 不遮擋現有 controls。
@@ -970,6 +1093,9 @@ maxScoutFiles: 6
 | Context 掃描慢 | Start Council 延遲 | preview debounce、cache、progress logs |
 | Mock tests 變脆 | 開發速度下降 | context pack 支援 minimal target fixture |
 | Auto approve 危險 | 錯 plan 直接執行 | context guard，不足時強制 Gate #1 |
+| 全域 CONTEXT.json 覆蓋 | 多任務 context 混淆 | 使用 task-scoped `PLANNING/council_NNN.json` / `context_NNN.json` |
+| Stage 2 半盲 | 排名仍基於 raw prompt | Stage 2 prompt 必須包含 context-aware request |
+| 新公開狀態造成 resume bug | 重啟恢復變複雜 | Phase 6a 不新增公開 `CONTEXT_GATHERING` |
 
 ---
 
@@ -979,23 +1105,24 @@ maxScoutFiles: 6
 
 1. `project_context.py` L0 blueprint。
 2. `run_council(prompt, context_pack=...)`。
-3. Context envelope prompt。
+3. Context envelope prompt，且 Stage 1/2/3 都使用。
 4. conversation JSON 保存 context pack。
-5. council markdown 輸出 context summary。
-6. 測試確保不再 blind council。
+5. `PLANNING/council_NNN.md/json` 輸出 context summary / context pack。
+6. auto-approve context guard。
+7. 測試確保不再 blind council。
 
-這可以不改 UI，使用者體感幾乎完全相同，但 Council 已經不再是純 prompt-only。
+這一批不改 UI，使用者體感幾乎完全相同，但 Council 已經不再是純 prompt-only。
 
 ---
 
 ## 16. 建議最終排序
 
 ```text
-P0: 6a L0 Blueprint + Prompt Injection + Provenance
-P1: 6b Context Preview + Gate #1 Summary
-P1: 6c Manual Context Files
-P2: 6d Scout Auto Recommendation
-P2: 6e Auto-approve Context Guard
+P0: 6a L0 Blueprint + Prompt Injection + Provenance + Auto-approve Guard
+P1: 6b Gate #1 Context Summary / Visibility
+P1: 6c Context Preview API + Minimal Context Bar
+P2: 6d Manual Context Files
+P2: 6e Scout Auto Recommendation
 P3: 6f Explorer Brief
 ```
 
