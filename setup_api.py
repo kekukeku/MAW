@@ -95,14 +95,14 @@ def assess_health(project_path: str) -> dict[str, Any]:
     if not os.path.isdir(workflow):
         return {
             "lamp": "red",
-            "label": "MAW_workflow not created",
+            "label": "亞瑟王缺席",
             "valid": False,
             "issues": [f"Missing {WORKFLOW_DIR_NAME}/ directory."],
         }
 
     valid, issues = _validate_contract(root)
     if valid:
-        return {"lamp": "green", "label": "Ready", "valid": True, "issues": []}
+        return {"lamp": "green", "label": "亞瑟王駕到", "valid": True, "issues": []}
 
     script_issues = [i for i in issues if "scripts/" in i or "agent-runner/" in i]
     gitignore_issues = [i for i in issues if "gitignore" in i.lower()]

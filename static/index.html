@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MAW 圓桌會議自主開發引擎</title>
+  <title>AI 圓桌武士 Multi-Agent-Workflow</title>
   <!-- Google Fonts: Cinzel & Inter & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -99,7 +99,7 @@
   <header class="topbar">
     <div style="display: flex; align-items: center;">
       <img src="/static/main_app_icon.png" style="height: 38px; border-radius: 50%; border: 2px solid var(--accent); box-shadow: 0 0 8px var(--gold-glow); margin-right: 12px;" alt="圓桌標誌" />
-      <h1>MAW 圓桌會議自主開發引擎</h1>
+      <h1>AI 圓桌武士 Multi-Agent-Workflow</h1>
     </div>
     <div class="topbar-actions">
       <button class="btn btn-secondary" onclick="showSetupMode()">⚙ 系統設定</button>
@@ -111,11 +111,11 @@
     <div class="panel setup-panel" id="panel-setup">
       <h2>
         <img src="/static/installer_icon.png" style="height: 22px; border-radius: 4px; vertical-align: middle; margin-right: 8px; border: 1px solid var(--accent);" alt="盾牌標誌" />
-        控制台 0 — 系統環境與現況設定
+        圓桌準備 — 系統環境與現況設定
       </h2>
       <div class="setup-grid">
         <div>
-          <label>大語言模型（LLM）供應商</label>
+          <label>圓桌會議</label>
           <select id="llm-provider" onchange="onProviderChange()">
             <option value="litellm">★ LiteLLM 本地代理（推薦）</option>
             <option value="openrouter">OpenRouter 雲端聚合器</option>
@@ -161,9 +161,9 @@
           <ul id="health-issues" style="font-size:12px;color:var(--muted);margin-left:16px"></ul>
         </div>
         <div>
-          <label>執行者代理 (Executor)</label>
+          <label>執行官 (Executor)</label>
           <select id="executor-agent" onchange="onAgentChange()"></select>
-          <label>審查者代理 (Reviewer)</label>
+          <label>判官 (Reviewer)</label>
           <select id="reviewer-agent" onchange="onAgentChange()"></select>
           <div id="custom-agent-fields" class="mode-hidden">
             <label>自訂執行者指令</label>
