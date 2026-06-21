@@ -1,161 +1,188 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MAW Autonomous Workflow Engine</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <title>MAW 圓桌會議自主開發引擎</title>
+  <!-- Google Fonts: Cinzel & Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+  <!-- Marked.js for Markdown Rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Single persistent WebSocket helper -->
   <script src="/static/ws-manager.js"></script>
+  
   <style>
     :root {
-      --bg: #0b0f19; --panel: #121829; --border: rgba(255,255,255,0.08);
-      --accent: #6366f1; --accent2: #4f46e5; --text: #f3f4f6; --muted: #9ca3af;
-      --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+      --bg: #04120b; /* 極深森林綠 */
+      --panel: #092214; /* 墨綠宮廷底色 */
+      --border: rgba(212, 175, 55, 0.22); /* 皇家金絲邊框 */
+      --accent: #d4af37; /* 皇家金箔黃金 */
+      --accent-hover: #f3cf58; /* 閃耀淡金 */
+      --accent2: #b89028; /* 古典暗金 */
+      --text: #f3f4f6;
+      --muted: #a1a8a3;
+      --ok: #34d399; /* 翡翠綠 */
+      --warn: #fbbf24; /* 琥珀金 */
+      --err: #ef4444;
+      --gold-glow: rgba(212, 175, 55, 0.35);
+      --font-display: 'Cinzel', Georgia, serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Inter, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    body { font-family: Inter, "PingFang TC", "Heiti TC", "Microsoft JhengHei", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
     .layout { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr auto; gap: 12px; padding: 16px; height: 100vh; }
-    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; overflow: auto; }
-    .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; overflow: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    .panel h2 { font-family: var(--font-display); font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 12px; border-bottom: 1px dashed var(--border); padding-bottom: 6px; }
     .full-width { grid-column: 1 / -1; }
-    textarea, select, input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; }
+    textarea, select, input { width: 100%; background: rgba(0,0,0,0.45); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; transition: all 0.3s; }
+    textarea:focus, select:focus, input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 8px var(--gold-glow); }
     textarea { min-height: 100px; resize: vertical; }
-    label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
-    .btn { padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 13px; }
-    .btn-primary { background: var(--accent); color: #fff; }
-    .btn-danger { background: var(--err); color: #fff; }
-    .btn-secondary { background: rgba(255,255,255,0.08); color: var(--text); }
+    label { display: block; font-size: 12px; color: var(--accent); font-weight: 600; margin: 8px 0 4px; letter-spacing: 0.05em; }
+    .btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.3s; }
+    .btn-primary { background: var(--accent); color: #04120b; border-color: var(--accent); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 0 10px var(--gold-glow); }
+    .btn-danger { background: var(--err); color: #fff; border-color: var(--err); }
+    .btn-danger:hover:not(:disabled) { filter: brightness(1.1); }
+    .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); }
+    .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.12); border-color: var(--accent); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 120px; overflow: auto; }
-    .model-grid label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+    .model-grid label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
     .pipeline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; }
-    .node { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); transition: all 0.3s; }
-    .node.active { background: rgba(99,102,241,0.2); border-color: var(--accent); color: #fff; animation: pulse 1.5s infinite; }
-    .node.done { background: rgba(16,185,129,0.15); border-color: var(--ok); color: var(--ok); }
-    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); } 50% { box-shadow: 0 0 12px 4px rgba(99,102,241,0.3); } }
-    .arrow { color: var(--muted); }
-    #terminal { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #050810; border-radius: 8px; padding: 12px; height: 200px; overflow-y: auto; white-space: pre-wrap; color: #a5f3fc; }
-    .stage-block { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 13px; }
-    .stage-block h3 { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; z-index: 100; }
+    .node { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); transition: all 0.3s; font-weight: 500; }
+    .node.active { background: rgba(212,175,55,0.15); border-color: var(--accent); color: #fff; animation: pulse 1.5s infinite; }
+    .node.done { background: rgba(52,211,153,0.12); border-color: var(--ok); color: var(--ok); }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(212,175,55,0.4); } 50% { box-shadow: 0 0 12px 4px rgba(212,175,55,0.35); } }
+    .arrow { color: var(--accent); font-weight: bold; }
+    #terminal { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #020905; border-radius: 8px; padding: 12px; height: 220px; overflow-y: auto; white-space: pre-wrap; color: #a7f3d0; border: 1px solid var(--border); }
+    .stage-block { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 13px; background: rgba(0,0,0,0.2); }
+    .stage-block h3 { font-family: var(--font-display); font-size: 12px; color: var(--accent); margin-bottom: 6px; border-bottom: 1px dashed rgba(212,175,55,0.15); padding-bottom: 3px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); }
     .modal.open { display: flex; }
-    .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 520px; max-width: 90vw; }
-    .modal-box h3 { margin-bottom: 16px; }
-    .report-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 13px; margin-bottom: 8px; }
+    .modal-box { background: var(--panel); border: 2px solid var(--accent); border-radius: 16px; padding: 24px; width: 560px; max-width: 90vw; box-shadow: 0 0 25px var(--gold-glow); }
+    .modal-box h3 { font-family: var(--font-display); color: var(--accent); font-size: 16px; margin-bottom: 16px; text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .report-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 13px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.03); padding-bottom: 4px; }
+    .report-row span:first-child { color: var(--accent); font-weight: 600; }
     .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
-    .status-running { background: rgba(99,102,241,0.2); color: var(--accent); }
-    .status-failed { background: rgba(239,68,68,0.2); color: var(--err); }
-    .status-done { background: rgba(16,185,129,0.2); color: var(--ok); }
-    .cost-hint { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; }
-    .cost-hint.mock { background: rgba(16,185,129,0.1); color: var(--ok); }
-    .cost-hint.live { background: rgba(245,158,11,0.1); color: var(--warn); }
-    .auto-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; margin-left: 8px; }
-    .auto-badge.on { background: rgba(16,185,129,0.15); color: var(--ok); }
-    .auto-badge.off { background: rgba(245,158,11,0.15); color: var(--warn); }
-    .final-report { background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.25); border-radius: 12px; padding: 16px; margin-top: 16px; }
-    .final-report h3 { color: var(--ok); }
-    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
-    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; border: 1px solid transparent; }
+    .status-running { background: rgba(212,175,55,0.1); color: var(--accent); border-color: var(--accent); }
+    .status-failed { background: rgba(239,68,68,0.1); color: var(--err); border-color: var(--err); }
+    .status-done { background: rgba(52,211,153,0.1); color: var(--ok); border-color: var(--ok); }
+    .cost-hint { font-size: 12px; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; border: 1px solid transparent; }
+    .cost-hint.mock { background: rgba(52,211,153,0.08); color: var(--ok); border-color: rgba(52,211,153,0.25); }
+    .cost-hint.live { background: rgba(251,191,36,0.08); color: var(--warn); border-color: rgba(251,191,36,0.25); }
+    .auto-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; margin-left: 8px; text-transform: uppercase; }
+    .auto-badge.on { background: rgba(52,211,153,0.15); color: var(--ok); border: 1px solid var(--ok); }
+    .auto-badge.off { background: rgba(251,191,36,0.15); color: var(--warn); border: 1px solid var(--warn); }
+    .final-report { background: rgba(52,211,153,0.03); border: 1px solid rgba(52,211,153,0.2); border-radius: 12px; padding: 18px; margin-top: 16px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+    .final-report h3 { color: var(--ok); font-family: var(--font-display); font-size: 15px; margin-bottom: 12px; border-bottom: 1px solid rgba(52,211,153,0.15); padding-bottom: 6px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel); box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+    .topbar h1 { font-family: var(--font-display); font-size: 20px; font-weight: 700; color: var(--accent); letter-spacing: 0.05em; text-shadow: 0 0 8px rgba(212,175,55,0.2); }
     .topbar-actions { display: flex; gap: 8px; }
     .mode-hidden { display: none !important; }
-    .health-lamp { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,0.25); margin: 8px 0; }
-    .health-red { color: var(--err); }
-    .health-yellow { color: var(--warn); }
-    .health-green { color: var(--ok); }
-    .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .health-lamp { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,0.3); margin: 8px 0; border: 1px solid var(--border); font-weight: 600; }
+    .health-red { color: var(--err); border-color: rgba(239,68,68,0.25); }
+    .health-yellow { color: var(--warn); border-color: rgba(251,191,36,0.25); }
+    .health-green { color: var(--ok); border-color: rgba(52,211,153,0.25); }
+    .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .setup-panel { grid-column: 1 / -1; }
     .provider-section { margin-top: 8px; }
-    .direct-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .vendor-tag { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 6px; margin: 2px 4px 2px 0; background: rgba(16,185,129,0.12); color: var(--ok); }
-    .vendor-tag.fail { background: rgba(239,68,68,0.12); color: var(--err); }
-    .model-disabled { opacity: 0.45; }
+    .direct-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .vendor-tag { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 6px; margin: 2px 4px 2px 0; background: rgba(52,211,153,0.1); color: var(--ok); border: 1px solid rgba(52,211,153,0.2); font-weight: 600; }
+    .vendor-tag.fail { background: rgba(239,68,68,0.1); color: var(--err); border: 1px solid rgba(239,68,68,0.2); }
+    .model-disabled { opacity: 0.35; text-decoration: line-through; }
     @media (max-width: 900px) { .setup-grid, .direct-keys { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header class="topbar">
-    <h1>MAW</h1>
+    <div style="display: flex; align-items: center;">
+      <img src="/static/main_app_icon.png" style="height: 38px; border-radius: 50%; border: 2px solid var(--accent); box-shadow: 0 0 8px var(--gold-glow); margin-right: 12px;" alt="圓桌標誌" />
+      <h1>MAW 圓桌會議自主開發引擎</h1>
+    </div>
     <div class="topbar-actions">
-      <button class="btn btn-secondary" onclick="showSetupMode()">⚙ Settings</button>
-      <button class="btn btn-primary" id="btn-launch" onclick="launchWorkflow()" disabled title="Complete setup first">▶ Launch Workflow</button>
+      <button class="btn btn-secondary" onclick="showSetupMode()">⚙ 系統設定</button>
+      <button class="btn btn-primary" id="btn-launch" onclick="launchWorkflow()" disabled title="請先完成環境設定">▶ 啟動圓桌工作流</button>
     </div>
   </header>
 
   <div id="mode-setup" class="layout" style="grid-template-columns:1fr; grid-template-rows:auto 1fr;">
     <div class="panel setup-panel" id="panel-setup">
-      <h2>Panel 0 — Setup &amp; Status</h2>
+      <h2>
+        <img src="/static/installer_icon.png" style="height: 22px; border-radius: 4px; vertical-align: middle; margin-right: 8px; border: 1px solid var(--accent);" alt="盾牌標誌" />
+        控制台 0 — 系統環境與現況設定
+      </h2>
       <div class="setup-grid">
         <div>
-          <label>LLM Provider</label>
+          <label>大語言模型（LLM）供應商</label>
           <select id="llm-provider" onchange="onProviderChange()">
-            <option value="litellm">★ LiteLLM Proxy (recommended)</option>
-            <option value="openrouter">OpenRouter (cloud aggregation)</option>
-            <option value="direct">Direct API (7 vendors)</option>
+            <option value="litellm">★ LiteLLM 本地代理（推薦）</option>
+            <option value="openrouter">OpenRouter 雲端聚合器</option>
+            <option value="direct">Direct API 直連模式（支援七大廠商）</option>
           </select>
           <div id="section-litellm" class="provider-section">
-            <label>LiteLLM Base URL</label>
+            <label>LiteLLM 基礎 API 位址</label>
             <input id="litellm-base" value="http://localhost:4000">
-            <label>LiteLLM API Key (optional)</label>
-            <input id="litellm-key" type="password" placeholder="Optional proxy key">
+            <label>LiteLLM API 金鑰（選填）</label>
+            <input id="litellm-key" type="password" placeholder="選填 proxy 金鑰">
           </div>
           <div id="section-openrouter" class="provider-section mode-hidden">
-            <label>OpenRouter API Key</label>
+            <label>OpenRouter API 金鑰</label>
             <input id="openrouter-key" type="password" placeholder="sk-or-...">
           </div>
           <div id="section-direct" class="provider-section mode-hidden">
-            <p style="font-size:12px;color:var(--muted);margin:6px 0">Fill keys to enable vendors. Kimi/Qwen auto-detect CN vs intl.</p>
+            <p style="font-size:12px;color:var(--muted);margin:6px 0">填寫金鑰以啟用對應廠商模型。月之暗面 (Kimi) 與通義千問 (Qwen) 會自動識別國內/國際端點。</p>
             <div class="direct-keys">
               <div><label>OpenAI</label><input id="key-openai" type="password" placeholder="OPENAI_API_KEY"></div>
               <div><label>Anthropic</label><input id="key-anthropic" type="password" placeholder="ANTHROPIC_API_KEY"></div>
               <div><label>Google Gemini</label><input id="key-google" type="password" placeholder="GOOGLE_API_KEY"></div>
               <div><label>DeepSeek</label><input id="key-deepseek" type="password" placeholder="DEEPSEEK_API_KEY"></div>
-              <div><label>Kimi / Moonshot</label><input id="key-kimi" type="password" placeholder="KIMI_API_KEY"></div>
-              <div><label>Qwen / 通義</label><input id="key-qwen" type="password" placeholder="QWEN_API_KEY"></div>
+              <div><label>Kimi / 月之暗面</label><input id="key-kimi" type="password" placeholder="KIMI_API_KEY"></div>
+              <div><label>Qwen / 通義千問</label><input id="key-qwen" type="password" placeholder="QWEN_API_KEY"></div>
               <div><label>Grok / xAI</label><input id="key-grok" type="password" placeholder="GROK_API_KEY"></div>
             </div>
             <div id="vendor-results" style="margin-top:8px"></div>
           </div>
           <div class="actions">
-            <button class="btn btn-secondary" onclick="testLlm()">Test Connection</button>
+            <button class="btn btn-secondary" onclick="testLlm()">測試連線</button>
             <span id="llm-test-status" style="font-size:12px;color:var(--muted)"></span>
           </div>
         </div>
         <div>
-          <label>Target Project Path</label>
-          <input id="project-path" placeholder="/path/to/your/project">
+          <label>目標專案本機路徑</label>
+          <input id="project-path" placeholder="/請填寫目標專案資料夾路徑">
           <div class="actions">
-            <button class="btn btn-secondary" onclick="pickFolder()">Browse…</button>
-            <button class="btn btn-secondary" onclick="validateProject()">Validate</button>
-            <button class="btn btn-primary" onclick="scaffoldProject()">🔧 Scaffold</button>
+            <button class="btn btn-secondary" onclick="pickFolder()">瀏覽目錄…</button>
+            <button class="btn btn-secondary" onclick="validateProject()">驗證合約</button>
+            <button class="btn btn-primary" onclick="scaffoldProject()">🔧 一鍵補齊 (Scaffold)</button>
           </div>
-          <div id="health-lamp" class="health-lamp health-red">🔴 MAW_workflow not checked</div>
+          <div id="health-lamp" class="health-lamp health-red">🔴 未驗證 MAW_workflow 目錄狀態</div>
           <ul id="health-issues" style="font-size:12px;color:var(--muted);margin-left:16px"></ul>
         </div>
         <div>
-          <label>Executor Agent</label>
+          <label>執行者代理 (Executor)</label>
           <select id="executor-agent" onchange="onAgentChange()"></select>
-          <label>Reviewer Agent</label>
+          <label>審查者代理 (Reviewer)</label>
           <select id="reviewer-agent" onchange="onAgentChange()"></select>
           <div id="custom-agent-fields" class="mode-hidden">
-            <label>Custom Executor Command</label>
-            <input id="custom-executor-cmd" placeholder="e.g. python3 my_executor.py --task $MAW_TASK_NUM">
-            <label>Custom Reviewer Command</label>
-            <input id="custom-reviewer-cmd" placeholder="e.g. node my_reviewer.js $MAW_TASK_NUM">
+            <label>自訂執行者指令</label>
+            <input id="custom-executor-cmd" placeholder="例如: python3 my_executor.py --task $MAW_TASK_NUM">
+            <label>自訂審查者指令</label>
+            <input id="custom-reviewer-cmd" placeholder="例如: node my_reviewer.js $MAW_TASK_NUM">
           </div>
           <div class="actions">
-            <button class="btn btn-secondary" onclick="installAdapters()">Install Agent Scripts</button>
+            <button class="btn btn-secondary" onclick="installAdapters()">安裝代理驅動腳本</button>
           </div>
         </div>
         <div>
-          <label>Preflight</label>
+          <label>啟動前預檢 (Preflight)</label>
           <p style="font-size:12px;color:var(--muted);line-height:1.5">
-            Launch requires: LLM tested ✓, green health lamp ✓, agents selected ✓.
-            Contract files live in <code>MAW_workflow/</code>.
+            啟動要求：模型測試通過 ✓、健康燈呈綠色 ✓、代理角色已指派。合約檔案皆存於目標專案的 <code>MAW_workflow/</code> 目錄中。
           </p>
           <ul id="preflight-issues" style="font-size:12px;color:var(--muted);margin-left:16px"></ul>
           <div class="actions">
-            <button class="btn btn-primary" onclick="saveSetup()">Save Settings</button>
+            <button class="btn btn-primary" onclick="saveSetup()">儲存系統設定</button>
           </div>
           <p id="setup-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
         </div>
@@ -166,33 +193,33 @@
   <div id="mode-workflow" class="layout mode-hidden">
     <!-- Panel 1: Council Creation -->
     <div class="panel" id="panel-create">
-      <h2>Panel 1 — Council Creation</h2>
-      <label>Task Prompt</label>
-      <textarea id="prompt" placeholder="Describe what you want the council to plan..."></textarea>
-      <label>Target Project</label>
+      <h2>Panel 1 — 發起圓桌會議</h2>
+      <label>開發任務需求描述</label>
+      <textarea id="prompt" placeholder="請描述您希望董事會規劃的開發目標與細節..."></textarea>
+      <label>目標專案</label>
       <select id="target-key"></select>
-      <label>Council Members</label>
+      <label>參會董事會模型成員（多選）</label>
       <div class="model-grid" id="council-models"></div>
-      <label>Chairman Model</label>
+      <label>董事長模型（負責彙整總結）</label>
       <select id="chairman-model"></select>
-      <label>Review Mode</label>
+      <label>代碼審查模式</label>
       <select id="review-mode">
-        <option value="AI">AI Review</option>
-        <option value="Human">Human Review</option>
-        <option value="None">None (skip review)</option>
+        <option value="AI">AI 自動審查 (Grok Build)</option>
+        <option value="Human">人工手動審查</option>
+        <option value="None">跳過審查直接提交</option>
       </select>
-      <label>Max AI Review Iterations (0-5)</label>
+      <label>AI 自動審查迴圈上限 (0-5 次)</label>
       <input type="number" id="max-iterations" min="0" max="5" value="3">
-      <label><input type="checkbox" id="allow-changes" checked> Allow REQUEST_CHANGES loop</label>
-      <label title="Unchecking skips gate #2 only when ALLOW_AUTO_COMMIT=true on server">
-        <input type="checkbox" id="require-commit" checked> Require pre-commit approval
+      <label><input type="checkbox" id="allow-changes" checked> 允許自動退件修復迴圈 (Request Changes)</label>
+      <label title="取消核取時，只有在伺服器環境變數 ALLOW_AUTO_COMMIT=true 時才會跳過審批">
+        <input type="checkbox" id="require-commit" checked> 程式碼提交與合併前需人工審批二次確認 (Gate #2)
         <span id="auto-commit-badge" class="auto-badge off">server off</span>
       </label>
-      <label title="When enabled, skips council approval gate (gate #1) automatically">
-        <input type="checkbox" id="auto-approve-council"> Auto-approve council plan
+      <label title="啟用時，自動跳過會議決議審查關卡 (Gate #1)">
+        <input type="checkbox" id="auto-approve-council"> 自動批准董事會決議 (Auto-approve)
       </label>
       <div class="actions">
-        <button class="btn btn-primary" onclick="startCouncil()">Start Council</button>
+        <button class="btn btn-primary" onclick="startCouncil()">開始開會</button>
       </div>
       <p id="create-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
       <div id="cost-hint" class="cost-hint" style="display:none"></div>
@@ -200,39 +227,39 @@
 
     <!-- Panel 2: Council Result / Final Report -->
     <div class="panel" id="panel-council">
-      <h2 id="panel2-title">Panel 2 — Council Result Review</h2>
-      <div id="council-results"><p style="color:var(--muted)">Run a council to see results.</p></div>
+      <h2 id="panel2-title">Panel 2 — 董事會決議審查 / 最終報告</h2>
+      <div id="council-results"><p style="color:var(--muted)">發起圓桌會議後在此展示開會結果。</p></div>
       <div class="actions" id="council-actions" style="display:none">
-        <button class="btn btn-primary" onclick="approveCouncil()">Approve Plan</button>
-        <button class="btn btn-danger" onclick="rejectCouncil()">Reject</button>
+        <button class="btn btn-primary" onclick="approveCouncil()">批准決議並動工</button>
+        <button class="btn btn-danger" onclick="rejectCouncil()">否決提案</button>
       </div>
     </div>
 
     <!-- Panel 3: Workflow Pipeline Tracker -->
     <div class="panel full-width" id="panel-pipeline">
-      <h2>Panel 3 — Workflow Pipeline</h2>
+      <h2>Panel 3 — 自動化工作流流水線</h2>
       <div class="pipeline" id="pipeline">
-        <span class="node" data-state="COUNCIL_RUNNING">Council</span><span class="arrow">→</span>
-        <span class="node" data-state="EXPORTED">Export</span><span class="arrow">→</span>
-        <span class="node" data-state="EXECUTOR_RUNNING">Executor</span><span class="arrow">→</span>
-        <span class="node" data-state="REVIEW_RUNNING">Review</span><span class="arrow">→</span>
-        <span class="node" data-state="FIX_LOOP">Fix Loop</span><span class="arrow">→</span>
-        <span class="node" data-state="COMMIT_PENDING_APPROVAL">Commit Approval</span><span class="arrow">→</span>
-        <span class="node" data-state="COMPLETED">Done</span>
+        <span class="node" data-state="COUNCIL_RUNNING">圓桌會議</span><span class="arrow">→</span>
+        <span class="node" data-state="EXPORTED">計畫已匯出</span><span class="arrow">→</span>
+        <span class="node" data-state="EXECUTOR_RUNNING">執行者寫碼</span><span class="arrow">→</span>
+        <span class="node" data-state="REVIEW_RUNNING">審查者審代碼</span><span class="arrow">→</span>
+        <span class="node" data-state="FIX_LOOP">修復迴圈</span><span class="arrow">→</span>
+        <span class="node" data-state="COMMIT_PENDING_APPROVAL">提交審批關卡</span><span class="arrow">→</span>
+        <span class="node" data-state="COMPLETED">任務完成</span>
       </div>
-      <p>State: <span id="workflow-state" class="status-badge status-running">IDLE</span>
-         Task: <span id="task-num">—</span></p>
+      <p>狀態: <span id="workflow-state" class="status-badge status-running">IDLE</span>
+         任務編號: <span id="task-num">—</span></p>
       <div class="actions" id="human-review-actions" style="display:none">
-        <span style="font-size:12px;color:var(--muted);margin-right:8px;">Human review:</span>
-        <button class="btn btn-primary" onclick="submitHumanReview('APPROVE')">Approve</button>
-        <button class="btn btn-secondary" onclick="submitHumanReview('REQUEST_CHANGES')">Request Changes</button>
-        <button class="btn btn-danger" onclick="submitHumanReview('REJECT')">Reject</button>
+        <span style="font-size:12px;color:var(--muted);margin-right:8px;">人工審查決策:</span>
+        <button class="btn btn-primary" onclick="submitHumanReview('APPROVE')">Approve (通過)</button>
+        <button class="btn btn-secondary" onclick="submitHumanReview('REQUEST_CHANGES')">Request Changes (要求修改)</button>
+        <button class="btn btn-danger" onclick="submitHumanReview('REJECT')">Reject (駁回)</button>
       </div>
     </div>
 
     <!-- Panel 4: Real-Time Log Terminal -->
     <div class="panel full-width" id="panel-logs">
-      <h2>Panel 4 — Real-Time Logs</h2>
+      <h2>Panel 4 — 實時執行終端日誌 (stdout)</h2>
       <div id="terminal"></div>
     </div>
   </div><!-- /mode-workflow -->
@@ -240,12 +267,12 @@
   <!-- Panel 5: Pre-Commit Report Modal -->
   <div class="modal" id="commit-modal">
     <div class="modal-box">
-      <h3>Panel 5 — Pre-Commit Report</h3>
+      <h3>Panel 5 — 程式碼提交與合併審批報告</h3>
       <div id="commit-report"></div>
       <div class="actions">
-        <button class="btn btn-primary" onclick="approveCommit()">Approve Commit</button>
-        <button class="btn btn-secondary" onclick="requestChanges()">Request Changes</button>
-        <button class="btn btn-danger" onclick="cancelWorkflow()">Cancel</button>
+        <button class="btn btn-primary" onclick="approveCommit()">核准合併並提交 (Approve)</button>
+        <button class="btn btn-secondary" onclick="requestChanges()">駁回並退件修改 (Request Changes)</button>
+        <button class="btn btn-danger" onclick="cancelWorkflow()">中止並放棄工作流 (Cancel)</button>
       </div>
     </div>
   </div>
@@ -298,7 +325,7 @@
       const data = await res.json();
       const btn = document.getElementById('btn-launch');
       btn.disabled = !data.ready;
-      btn.title = data.ready ? 'Launch workflow' : (data.issues?.[0] || 'Complete setup first');
+      btn.title = data.ready ? '啟動工作流' : (data.issues?.[0] || '請先完成環境設定');
       document.getElementById('preflight-issues').innerHTML = (data.issues || []).map(i => `<li>${i}</li>`).join('');
     }
 
@@ -307,13 +334,14 @@
       const issuesEl = document.getElementById('health-issues');
       const icons = { red: '🔴', yellow: '🟡', green: '🟢' };
       const cls = { red: 'health-red', yellow: 'health-yellow', green: 'health-green' };
-      const h = health || { lamp: 'red', label: 'Unknown', issues: [] };
+      const h = health || { lamp: 'red', label: '未知狀態', issues: [] };
       lamp.className = `health-lamp ${cls[h.lamp] || 'health-red'}`;
-      lamp.textContent = `${icons[h.lamp] || '🔴'} ${h.label || 'Not ready'}`;
+      lamp.textContent = `${icons[h.lamp] || '🔴'} ${h.label || '未就緒'}`;
       issuesEl.innerHTML = (h.issues || []).map(i => `<li>${i}</li>`).join('');
       updateLaunchButton();
     }
 
+    // Bind change listener for custom command fields
     function onAgentChange() {
       const exec = document.getElementById('executor-agent').value;
       const rev = document.getElementById('reviewer-agent').value;
@@ -353,8 +381,8 @@
       }
       if (setupStatus.llmTested) {
         document.getElementById('llm-test-status').textContent = setupStatus.llmTestedAt
-          ? `✅ Last tested ${new Date(setupStatus.llmTestedAt).toLocaleString()}`
-          : '✅ Previously tested';
+          ? `✅ 上次測試成功 ${new Date(setupStatus.llmTestedAt).toLocaleString()}`
+          : '✅ 上次測試成功';
       }
     }
 
@@ -367,7 +395,7 @@
       return {
         targetPath: document.getElementById('project-path').value.trim(),
         targetKey: 'default',
-        targetName: 'Default Target',
+        targetName: '預設目標專案',
         llmProvider: document.getElementById('llm-provider').value,
         litellmBase: document.getElementById('litellm-base').value.trim(),
         litellmKey: document.getElementById('litellm-key')?.value?.trim() || undefined,
@@ -385,7 +413,7 @@
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(buildSaveBody()),
       });
       setupStatus = await res.json();
-      document.getElementById('setup-status').textContent = 'Settings saved.';
+      document.getElementById('setup-status').textContent = '設定儲存成功。';
       await refreshTargets();
       await loadLlmModels();
       const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget);
@@ -402,7 +430,7 @@
 
     async function installAdapters() {
       const path = document.getElementById('project-path').value.trim();
-      if (!path) return alert('Enter a project path first');
+      if (!path) return alert('請先填寫專案路徑');
       await saveSetup();
       const res = await fetch(`${API}/api/setup/install-adapters`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -416,7 +444,7 @@
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(err.detail || 'Install failed');
+        alert(err.detail || '腳本安裝失敗');
         return;
       }
       const data = await res.json();
@@ -436,24 +464,24 @@
 
     async function scaffoldProject() {
       const path = document.getElementById('project-path').value.trim();
-      if (!path) return alert('Enter a project path first');
+      if (!path) return alert('請先填寫專案路徑');
       const res = await fetch(`${API}/api/setup/scaffold`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ projectPath: path, patchGitignore: true }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(err.detail || 'Scaffold failed');
+        alert(err.detail || 'Scaffold 失敗');
         return;
       }
       const data = await res.json();
       renderHealth(data.health);
-      document.getElementById('setup-status').textContent = `Scaffolded ${data.workflowPath}`;
+      document.getElementById('setup-status').textContent = `已成功 Scaffold 至 ${data.workflowPath}`;
       await refreshTargets();
     }
 
     async function testLlm() {
-      document.getElementById('llm-test-status').textContent = 'Testing...';
+      document.getElementById('llm-test-status').textContent = '正在測試連線...';
       await saveSetup();
       const res = await fetch(`${API}/api/setup/test-llm`, { method: 'POST' });
       const data = await res.json();
@@ -467,7 +495,7 @@
       const res = await fetch(`${API}/api/setup/pick-folder`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(err.detail || 'Folder picker unavailable');
+        alert(err.detail || '無法啟用資料夾選取器');
         return;
       }
       const data = await res.json();
@@ -481,7 +509,7 @@
       const data = await res.json();
       if (!data.ready) {
         renderHealth(data.health);
-        alert('Preflight failed:\n' + (data.issues || []).join('\n'));
+        alert('啟動前預檢未通過：\n' + (data.issues || []).join('\n'));
         return;
       }
       showWorkflowMode();
@@ -505,10 +533,10 @@
       const badge = document.getElementById('auto-commit-badge');
       if (config.allowAutoCommit) {
         badge.className = 'auto-badge on';
-        badge.textContent = '\u2714 server on';
+        badge.textContent = '✔ 伺服器已開啟';
       } else {
         badge.className = 'auto-badge off';
-        badge.textContent = '\u26a0 server off';
+        badge.textContent = '⚠ 伺服器關閉';
       }
     }
 
@@ -534,7 +562,7 @@
 
     function renderTargets() {
       const sel = document.getElementById('target-key');
-      sel.innerHTML = targets.map(t => `<option value="${t.key}" ${!t.valid ? 'disabled' : ''}>${t.name}${t.valid ? '' : ' (invalid)'}</option>`).join('');
+      sel.innerHTML = targets.map(t => `<option value="${t.key}" ${!t.valid ? 'disabled' : ''}>${t.name}${t.valid ? '' : ' (無效架構)'}</option>`).join('');
     }
 
     function selectedModels() {
@@ -547,10 +575,10 @@
       const councilCount = selectedModels().length;
       if (isMock) {
         hint.className = 'cost-hint mock';
-        hint.textContent = `\u{1F9EA} Mock mode (MAW_MOCK_MODE) — no API calls (${councilCount} members + 1 chairman)`;
+        hint.textContent = `🧪 模擬模式 (MAW_MOCK_MODE) — 將不會消耗實際 API 點數 (${councilCount} 個模型成員 + 1 個董事長)`;
       } else {
         hint.className = 'cost-hint live';
-        hint.textContent = `\u{1F4B0} Live mode — will call ${councilCount} council members + 1 chairman`;
+        hint.textContent = `💰 真實模式 — 將呼叫 ${councilCount} 個董事會模型成員 + 1 個董事長模型進行回答及互評`;
       }
       hint.style.display = 'block';
     }
@@ -563,10 +591,10 @@
 
     async function startCouncil() {
       const prompt = document.getElementById('prompt').value.trim();
-      if (!prompt) return alert('Enter a prompt');
+      if (!prompt) return alert('請填寫任務需求描述');
       const models = selectedModels();
-      if (!models.length) return alert('Select at least one enabled council model');
-      document.getElementById('create-status').textContent = 'Council running...';
+      if (!models.length) return alert('請至少勾選一個可用的會議模型成員');
+      document.getElementById('create-status').textContent = '圓桌會議進行中，正在收集各模型回答...';
       const body = {
         prompt, targetKey: document.getElementById('target-key').value,
         councilModels: models,
@@ -583,7 +611,7 @@
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        document.getElementById('create-status').textContent = 'Failed: ' + (err.detail || res.status);
+        document.getElementById('create-status').textContent = '啟動失敗: ' + (err.detail || res.status);
         return;
       }
       const started = await res.json();
@@ -609,12 +637,12 @@
         }
         if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
           activeConversationId = wf.conversation_id;
-          document.getElementById('create-status').textContent = 'Council complete — review results';
+          document.getElementById('create-status').textContent = '會議完成 — 請於控制台 2 審查結果';
           await loadCouncilResults();
           return;
         }
         if (wf.state === 'FAILED') {
-          document.getElementById('create-status').textContent = 'Council failed: ' + (wf.reason || '');
+          document.getElementById('create-status').textContent = '會議失敗: ' + (wf.reason || '');
           return;
         }
       }
@@ -626,21 +654,21 @@
       const conv = data.conversation;
       const msg = conv.messages.find(m => m.stage3);
       if (!msg) return;
-      document.getElementById('panel2-title').textContent = 'Panel 2 — Council Result Review';
+      document.getElementById('panel2-title').textContent = 'Panel 2 — 董事會決議審查';
       let html = '';
       if (msg.stage1) {
-        html += '<div class="stage-block"><h3>Stage 1 — Individual Answers</h3>';
-        msg.stage1.forEach(s => { html += `<p><strong>${s.model}</strong></p><div>${marked.parse(s.response)}</div>`; });
-        html += '</div>';
+         html += '<div class="stage-block"><h3>Stage 1 — 委員獨立回答</h3>';
+         msg.stage1.forEach(s => { html += `<p><strong>${s.model}</strong></p><div>${marked.parse(s.response)}</div>`; });
+         html += '</div>';
       }
       if (msg.stage2) {
-        html += '<div class="stage-block"><h3>Stage 2 — Anonymous Rankings</h3>';
-        msg.stage2.forEach((s, i) => {
-          html += `<p><strong>Evaluator ${i + 1}</strong></p><div>${marked.parse(s.ranking)}</div>`;
-        });
-        html += '</div>';
+         html += '<div class="stage-block"><h3>Stage 2 — 匿名互相排名評價</h3>';
+         msg.stage2.forEach((s, i) => {
+           html += `<p><strong>評審委員 ${i + 1}</strong></p><div>${marked.parse(s.ranking)}</div>`;
+         });
+         html += '</div>';
       }
-      html += `<div class="stage-block"><h3>Stage 3 — Chairman Synthesis</h3><div>${marked.parse(msg.stage3.response)}</div></div>`;
+      html += `<div class="stage-block"><h3>Stage 3 — 董事長綜合彙整決議</h3><div>${marked.parse(msg.stage3.response)}</div></div>`;
       document.getElementById('council-results').innerHTML = html;
       document.getElementById('council-actions').style.display = 'flex';
       updatePipeline({ state: 'COUNCIL_PENDING_APPROVAL', review_iterations: 0 });
@@ -682,9 +710,12 @@
       mawWs.subscribe(taskNum);
     }
 
+    // Direct translation helper for logger streams
     function appendLog(entry) {
       const term = document.getElementById('terminal');
-      const prefix = entry.stream === 'stderr' ? '[ERR] ' : entry.stream === 'git' ? '[GIT] ' : '';
+      let prefix = '';
+      if (entry.stream === 'stderr') prefix = '[錯誤] ';
+      else if (entry.stream === 'git') prefix = '[GIT] ';
       term.textContent += `${entry.ts} ${prefix}${entry.line}\n`;
       term.scrollTop = term.scrollHeight;
     }
@@ -745,29 +776,30 @@
 
     function showFinalReport(wf) {
       const r = wf.final_report || {};
-      document.getElementById('panel2-title').textContent = 'Panel 2 — Final Report';
+      document.getElementById('panel2-title').textContent = 'Panel 2 — 董事會最終完工結案報告';
       document.getElementById('council-actions').style.display = 'none';
       document.getElementById('council-results').innerHTML = `
         <div class="final-report">
-          <h3>\u2705 Task Complete: ${r.task_id || ''}</h3>
-          <div class="report-row"><span>Title</span><span>${r.title || ''}</span></div>
-          <div class="report-row"><span>Files Changed</span><span>${r.files_changed || ''}</span></div>
-          <div class="report-row"><span>Review Decision</span><span>${r.review_decision || ''} (${r.review_iterations || 0} loops)</span></div>
-          <div class="report-row"><span>Committed At</span><span>${r.committed_at || ''}</span></div>
+          <h3>✅ 任務完成: ${r.task_id || ''}</h3>
+          <div class="report-row"><span>任務標題</span><span>${r.title || ''}</span></div>
+          <div class="report-row"><span>影響檔案</span><span>${r.files_changed || ''}</span></div>
+          <div class="report-row"><span>審查結果</span><span>${r.review_decision || ''} (${r.review_iterations || 0} 次修復迴圈)</span></div>
+          <div class="report-row"><span>提交時間</span><span>${r.committed_at || ''}</span></div>
           <div style="margin-top:12px;font-style:italic;color:var(--muted);">${marked.parse(r.chairman_summary || '')}</div>
         </div>`;
       document.getElementById('workflow-state').className = 'status-badge status-done';
       document.getElementById('workflow-state').textContent = wf.state;
     }
 
+    // Modal show with pre-commit metrics
     function showCommitModal(wf) {
       const r = wf.pre_commit_report || {};
       document.getElementById('commit-report').innerHTML = `
-        <div class="report-row"><span>Task ID</span><span>${r.task_id || ''}</span></div>
-        <div class="report-row"><span>Title</span><span>${r.title || ''}</span></div>
-        <div class="report-row"><span>Files Changed</span><span>${r.files_changed || ''}</span></div>
-        <div class="report-row"><span>Review Decision</span><span>${r.review_decision || ''} (${r.review_iterations || 0} loops)</span></div>
-        <div class="report-row"><span>Summary</span><span>${(r.chairman_summary || '').slice(0,200)}</span></div>`;
+        <div class="report-row"><span>任務 ID</span><span>${r.task_id || ''}</span></div>
+        <div class="report-row"><span>任務標題</span><span>${r.title || ''}</span></div>
+        <div class="report-row"><span>實際異動檔案</span><span>${r.files_changed || ''}</span></div>
+        <div class="report-row"><span>審查決策</span><span>${r.review_decision || ''} (${r.review_iterations || 0} 次修復迴圈)</span></div>
+        <div class="report-row"><span>董事長摘要</span><span>${(r.chairman_summary || '').slice(0,200)}</span></div>`;
       document.getElementById('commit-modal').classList.add('open');
     }
 
@@ -786,6 +818,7 @@
       await fetch(`${API}/api/maw/workflow/${activeTaskNum}/cancel`, { method: 'POST' });
       document.getElementById('commit-modal').classList.remove('open');
       updatePipeline({ state: 'FAILED', review_iterations: 0 });
+      pollWorkflow();
     }
 
     init();
