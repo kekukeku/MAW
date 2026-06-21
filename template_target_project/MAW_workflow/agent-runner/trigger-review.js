@@ -13,7 +13,7 @@ fs.mkdirSync(reviewsDir, { recursive: true });
 const reviewPath = path.join(reviewsDir, `review_${taskNum}.md`);
 const content = `# Review: TASK-${taskNum}
 
-- **Reviewer**: Grok Build (mock)
+- **Reviewer**: Mock reviewer
 - **Decision**: APPROVE
 - **Summary**: Mock review passed. Implementation meets acceptance criteria.
 

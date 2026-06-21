@@ -105,7 +105,9 @@ def main() -> int:
         if wf["state"] not in ("COMPLETED", "FINAL_REPORT_PRESENTED"):
             raise RuntimeError(f"Unexpected final state: {wf['state']}")
 
-        final_report_path = os.path.join(target_path, "PLANNING", f"final_report_{task_num}.md")
+        final_report_path = os.path.join(
+            target_path, "MAW_workflow", "PLANNING", f"final_report_{task_num}.md"
+        )
         if not os.path.isfile(final_report_path):
             raise RuntimeError("Final report file missing")
         print("  final report:", final_report_path)

@@ -512,7 +512,7 @@ Git 安全約束：禁止 force-push、rebase、分支刪除。
 | **Phase 2** | `export.py` 整合 + orchestrator 骨架 + 關卡 #1 API | Approve 後寫入目標專案 |
 | **Phase 3** | 執行/審查子程序 + 決策路由 + `workflows.json` | REQUEST_CHANGES 迴圈可運行 |
 | **Phase 4** | WebSocket + 五面板 UI | 管線與 log 即時可見 |
-| **Phase 5** | 安全限制 + 測試 + `template_target_project/` + README | 全套測試綠燈 |
+| **Phase 5** | 安全限制 + 測試 + `template_target_project/` + README | 全套測試綠燈（49 tests + smoke_test） |
 
 ---
 

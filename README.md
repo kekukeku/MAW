@@ -142,25 +142,32 @@ Six GUI/TUI agents (executor and reviewer use the same list): `openwork`, `grok_
 
 ## Testing
 
-Run all tests in mock mode:
+Run the full test suite in mock mode (49 tests):
 
 ```bash
-MAW_MOCK_MODE=1 uv run python -m unittest discover -v
+MAW_MOCK_MODE=1 uv run python -m unittest discover -q
 ```
 
-Run a quick smoke test against the template target project:
+Run a single module:
 
 ```bash
-# Add template target to ~/.agent-cowork/targets.json, then:
-MAW_MOCK_MODE=1 uv run python -m uvicorn main:app --port 8002
+MAW_MOCK_MODE=1 uv run python -m unittest test_safety -v
+```
+
+End-to-end HTTP smoke test (starts uvicorn on port 8082, exercises full happy path):
+
+```bash
+MAW_MOCK_MODE=1 uv run python smoke_test.py
 ```
 
 ## Safety Defaults
 
-- `ALLOW_AUTO_COMMIT=false`: the final commit always requires human approval.
+- `ALLOW_AUTO_COMMIT=false`: even if the UI unchecks pre-commit approval, gate #2 stays enforced until this env var is `true`.
+- `auto_approve_council` (UI checkbox): skips gate #1 only; independent of `ALLOW_AUTO_COMMIT`.
 - `MAX_REVIEW_ITERATIONS=3`: REQUEST_CHANGES loops are capped.
-- Subprocess timeouts prevent runaway executor/reviewer processes.
-- All workflow states are persisted to `data/workflows.json` for crash recovery.
+- `EXECUTOR_TIMEOUT_SECONDS` / `REVIEWER_TIMEOUT_SECONDS`: subprocess timeouts prevent runaway processes.
+- All workflow states persist to `data/workflows.json`; `resume_unfinished()` re-attaches monitors on restart.
+- Mock mode is server-only (`MAW_MOCK_MODE=1`); never exposed in the user UI.
 
 ## Advanced Auto-Mode
 

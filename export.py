@@ -314,8 +314,8 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 - **Status**: `IN_PROGRESS`
 - **Created**: {date_str}
 - **Created By**: Karpathy Council via MAW
-- **Assigned To**: Antigravity (Layer 3)
-- **Reviewer**: Grok Build (Layer 2)
+- **Assigned To**: Executor (configured agent)
+- **Reviewer**: Reviewer (configured agent)
 - **Priority**: `MEDIUM`
 - **Branch**: `task/task_{task_num}_{slug}`
 - **PR URL**: `N/A (exported via MAW)`
@@ -342,7 +342,7 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 - [ ] Implement the council-approved objective.
 - [ ] Run the target project's relevant verification command.
 - [ ] Preserve the task status workflow: move both `TASKS/task_{task_num}.md` and `AGENT_STATE.md` to `UNDER_REVIEW`, not `COMPLETED`.
-- [ ] Keep `PLANNING/council_{task_num}.md` available as review context for Grok Build.
+- [ ] Keep `PLANNING/council_{task_num}.md` available as review context for the reviewer.
 
 ---
 
@@ -352,7 +352,7 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 
 ---
 
-**Antigravity 執行指示**：完成實作後，請將 `TASKS/task_{task_num}.md` 與 `AGENT_STATE.md` 的任務狀態改為 `UNDER_REVIEW`，而非 `COMPLETED`。
+**執行者指示**：完成實作後，請將 `TASKS/task_{task_num}.md` 與 `AGENT_STATE.md` 的任務狀態改為 `UNDER_REVIEW`，而非 `COMPLETED`。
 """
 
 def render_council_markdown(task_num, title, date_str, user_request, models_list, stage1_text, stage2_text, aggregate_rankings_text, stage3_text, export_options_text):

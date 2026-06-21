@@ -1,7 +1,7 @@
 [project]
-name = "maw-council-export-adapter"
-version = "0.1.0"
-description = "Add your description here"
+name = "maw"
+version = "0.6.0"
+description = "MAW — Autonomous Council-Executor-Reviewer Workflow Engine"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
