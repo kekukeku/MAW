@@ -449,10 +449,14 @@ async def test_llm_connection() -> dict[str, Any]:
 
     elif provider == "litellm":
         base = env.get("LITELLM_API_BASE", "http://localhost:4000").rstrip("/")
+        api_key = env.get("LITELLM_API_KEY", "").strip()
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         try:
             import httpx
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{base}/v1/models")
+                resp = await client.get(f"{base}/v1/models", headers=headers)
             ok = resp.status_code == 200
             result = {
                 "ok": ok,
