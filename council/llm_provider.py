@@ -157,6 +157,8 @@ async def _query_litellm(
     url = f"{base}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     api_model = _api_model_name(model_id)
+    if "kimi" in api_model.lower() or "moonshot" in api_model.lower():
+        temperature = 1.0
     payload = {"model": api_model, "messages": messages, "temperature": temperature}
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
