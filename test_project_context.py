@@ -1,0 +1,224 @@
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import project_context as pc
+
+
+class TestProjectContext(unittest.TestCase):
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.target_root = self.test_dir / "target"
+        self.target_root.mkdir()
+
+        # Create project structure.
+        (self.target_root / "README.md").write_text(
+            "# Test Project\n\nThis is a test project for context-aware council.\n" * 50,
+            encoding="utf-8",
+        )
+        (self.target_root / "package.json").write_text(
+            '{"name": "test", "scripts": {"test": "jest", "lint": "eslint src"}}',
+            encoding="utf-8",
+        )
+        (self.target_root / "pyproject.toml").write_text(
+            "[project]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            encoding="utf-8",
+        )
+        src_dir = self.target_root / "src"
+        src_dir.mkdir()
+        (src_dir / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+
+        # Excluded directories/files.
+        (self.target_root / "node_modules").mkdir()
+        (self.target_root / "node_modules" / "ignored.js").write_text("ignored", encoding="utf-8")
+        (self.target_root / "MAW_workflow").mkdir()
+        (self.target_root / "MAW_workflow" / "state.md").write_text("state", encoding="utf-8")
+        (self.target_root / ".env").write_text("SECRET=12345\n", encoding="utf-8")
+        (self.target_root / ".git").mkdir()
+        (self.target_root / ".gitignore").write_text(
+            "node_modules/\nMAW_workflow/\n.env\n*.log\n",
+            encoding="utf-8",
+        )
+
+        # Large file to test truncation.
+        large = "x" * 30000
+        (self.target_root / "large_file.txt").write_text(large, encoding="utf-8")
+
+        # Initialize git repo so git check-ignore works.
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=self.target_root,
+            capture_output=True,
+            check=False,
+        )
+
+        self.targets = {
+            "default": "test",
+            "projects": {
+                "test": {
+                    "name": "Test Target",
+                    "path": str(self.target_root),
+                }
+            },
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _load_targets_patch(self):
+        return patch.object(pc, "load_targets", return_value=self.targets)
+
+    def test_build_context_pack_schema(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        self.assertEqual(pack["version"], 1)
+        self.assertEqual(pack["targetKey"], "test")
+        self.assertIn("targetPath", pack)
+        self.assertIn("generatedAt", pack)
+        self.assertIn("policy", pack)
+        self.assertIn("summary", pack)
+        self.assertIn("blueprint", pack)
+        self.assertIn("files", pack)
+        self.assertIn("accessIssues", pack)
+
+        summary = pack["summary"]
+        self.assertEqual(summary["status"], "ready")
+        self.assertGreater(summary["totalChars"], 0)
+        self.assertIn("truncated", summary)
+        self.assertIn("includedFiles", summary)
+        self.assertIn("excludedFiles", summary)
+
+        blueprint = pack["blueprint"]
+        self.assertIn("tree", blueprint)
+        self.assertIn("readme", blueprint)
+        self.assertIn("dependencies", blueprint)
+
+    def test_excludes_always_excluded_dirs(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        tree = pack["blueprint"]["tree"]
+        self.assertIn("src", tree)
+        self.assertNotIn("node_modules", tree)
+        self.assertNotIn("MAW_workflow", tree)
+        # .git directory should be excluded; .gitignore file is fine.
+        self.assertNotIn("├── .git\n", tree)
+        self.assertIn(".gitignore", tree)
+
+        paths = {issue["path"] for issue in pack["accessIssues"]}
+        self.assertTrue(any("node_modules" in p for p in paths))
+        self.assertTrue(any("MAW_workflow" in p for p in paths))
+
+    def test_excludes_secrets(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        paths = {issue["path"] for issue in pack["accessIssues"]}
+        self.assertIn(".env", paths)
+
+    def test_respects_gitignore(self):
+        # Create an ignored file not in always-excluded list.
+        (self.target_root / "ignored.tmp").write_text("temp\n", encoding="utf-8")
+        # Append a gitignore rule for .tmp files.
+        with open(self.target_root / ".gitignore", "a", encoding="utf-8") as f:
+            f.write("*.tmp\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        paths = {issue["path"] for issue in pack["accessIssues"]}
+        self.assertIn("ignored.tmp", paths)
+        self.assertTrue(any(issue["reason"] == "excluded_by_gitignore" for issue in pack["accessIssues"]))
+
+    def test_readme_included(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        readme = pack["blueprint"]["readme"]
+        self.assertIn("Test Project", readme)
+        # Should be truncated if README is large.
+        self.assertLessEqual(len(readme), pack["policy"]["maxReadmeChars"] + 100)
+
+    def test_dependency_files_included(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        deps = pack["blueprint"]["dependencies"]
+        dep_paths = {d["path"] for d in deps}
+        self.assertIn("package.json", dep_paths)
+        self.assertIn("pyproject.toml", dep_paths)
+
+        package = next(d for d in deps if d["path"] == "package.json")
+        self.assertIn("jest", package["content"])
+        self.assertIn("eslint", package["content"])
+
+    def test_large_file_truncated(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        # large_file.txt should be excluded by size? Actually it's not in always excluded,
+        # and we don't exclude by size in L0; it's just not included because only deps/README are read.
+        # It may appear in tree if small enough, but tree limit is by entries.
+        # The truncation we test is README truncation.
+        readme = pack["blueprint"]["readme"]
+        max_chars = pack["policy"]["maxReadmeChars"]
+        if len(readme) >= max_chars:
+            self.assertIn("omitted", readme)
+
+    def test_prompt_envelope_contains_context(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        envelope = pc.build_prompt_envelope("Implement feature X", pack)
+        self.assertIn("Target Project Context", envelope)
+        self.assertIn("Context Boundaries", envelope)
+        self.assertIn("User Request", envelope)
+        self.assertIn("Implement feature X", envelope)
+        self.assertIn(pack["targetKey"], envelope)
+
+    def test_prompt_envelope_unavailable(self):
+        envelope = pc.build_prompt_envelope("Implement feature X", None)
+        self.assertIn("unavailable", envelope)
+        self.assertIn("Context Boundaries", envelope)
+        self.assertIn("Implement feature X", envelope)
+
+    def test_compact_digest(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        digest = pc.compact_context_digest(pack)
+        self.assertIn(pack["targetKey"], digest)
+        self.assertIn("Directory tree", digest)
+
+    def test_unknown_target_raises(self):
+        with self.assertRaises(ValueError):
+            pc.build_context_pack("unknown", "Implement feature X")
+
+    def test_no_readme_still_ready(self):
+        (self.target_root / "README.md").unlink()
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+
+        self.assertEqual(pack["summary"]["status"], "ready")
+        self.assertEqual(pack["blueprint"]["readme"], "")
+
+    def test_total_budget_truncation_marker(self):
+        policy = {**pc.DEFAULT_POLICY, "maxTotalChars": 100}
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", policy=policy)
+
+        self.assertTrue(pack["summary"]["truncated"])
+        self.assertTrue(
+            any("exceeded_total_budget" in issue.get("reason", "") for issue in pack["accessIssues"])
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -4,11 +4,13 @@ import unittest
 import asyncio
 import tempfile
 import shutil
+from contextlib import ExitStack
 from unittest.mock import patch
 
 from loop_orchestrator import LoopOrchestrator, WorkflowState, parse_review_decision
 import council.storage as storage_mod
 import loop_orchestrator as orch_mod
+from council.storage import load_conversation
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -45,7 +47,10 @@ class TestOrchestrator(unittest.TestCase):
         shutil.rmtree(self.conv_dir, ignore_errors=True)
 
     def _targets_patch(self):
-        return patch("loop_orchestrator.load_targets", return_value=self.targets)
+        stack = ExitStack()
+        stack.enter_context(patch("loop_orchestrator.load_targets", return_value=self.targets))
+        stack.enter_context(patch("project_context.load_targets", return_value=self.targets))
+        return stack
 
     def test_parse_decision(self):
         self.assertEqual(parse_review_decision("DECISION: APPROVE\n"), "APPROVE")
@@ -95,14 +100,14 @@ class TestOrchestrator(unittest.TestCase):
         async def _run():
             with self._targets_patch():
                 await self.orch.start_council(prompt="Reject me", target_key="test", mock=True)
-            for _ in range(50):
-                await asyncio.sleep(0.1)
-                for wf in self.orch.list_workflows():
-                    if wf.get("conversation_id"):
-                        result = await self.orch.reject_council(wf["conversation_id"])
-                        self.assertEqual(result["state"], WorkflowState.FAILED.value)
-                        return
-            self.fail("Council did not complete")
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    for wf in self.orch.list_workflows():
+                        if wf.get("conversation_id"):
+                            result = await self.orch.reject_council(wf["conversation_id"])
+                            self.assertEqual(result["state"], WorkflowState.FAILED.value)
+                            return
+                self.fail("Council did not complete")
 
         asyncio.run(_run())
 
@@ -215,6 +220,103 @@ class TestOrchestrator(unittest.TestCase):
                 )
             self.assertEqual(wf["state"], WorkflowState.FAILED.value)
             self.assertIn("timed out", wf.get("reason", ""))
+
+        asyncio.run(_run())
+
+    def test_context_pack_is_built_and_saved(self):
+        async def _run():
+            with self._targets_patch():
+                wf = await self.orch.start_council(
+                    prompt="Test task",
+                    target_key="test",
+                    mock=True,
+                )
+                self.assertIn(wf["state"], [
+                    WorkflowState.IDLE.value,
+                    WorkflowState.COUNCIL_RUNNING.value,
+                ])
+
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    pending = [w for w in self.orch.list_workflows() if w.get("conversation_id")]
+                    if pending and pending[0]["state"] == WorkflowState.COUNCIL_PENDING_APPROVAL.value:
+                        conv_id = pending[0]["conversation_id"]
+                        break
+                else:
+                    self.fail("Council did not complete in time")
+
+                conv = load_conversation(conv_id)
+                self.assertIn("context_pack", conv)
+                self.assertEqual(conv["context_pack"]["targetKey"], "test")
+                self.assertEqual(conv["context_pack"]["summary"]["status"], "ready")
+
+        asyncio.run(_run())
+
+    def test_auto_approve_blocked_for_l0_only(self):
+        async def _run():
+            with self._targets_patch():
+                await self.orch.start_council(
+                    prompt="Test task",
+                    target_key="test",
+                    review_policy={
+                        "mode": "AI",
+                        "max_iterations": 3,
+                        "allow_request_changes": True,
+                        "require_pre_commit_approval": True,
+                        "auto_approve_council": True,
+                    },
+                    mock=True,
+                )
+
+                conv_id = None
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    for w in self.orch.list_workflows():
+                        if w.get("conversation_id") and w["state"] == WorkflowState.COUNCIL_PENDING_APPROVAL.value:
+                            conv_id = w["conversation_id"]
+                            break
+                    if conv_id:
+                        break
+                else:
+                    self.fail("Council did not complete in time")
+
+                # Workflow should be awaiting Gate #1, not already exported.
+                wf = self.orch.get_workflow_by_conversation(conv_id)
+                self.assertEqual(wf["state"], WorkflowState.COUNCIL_PENDING_APPROVAL.value)
+                self.assertTrue(any("blocked" in log.get("line", "").lower() for log in wf.get("logs", [])))
+
+        asyncio.run(_run())
+
+    def test_auto_approve_allowed_with_l0_override(self):
+        async def _run():
+            with self._targets_patch(), patch("loop_orchestrator.export_to_target") as mock_export:
+                mock_export.return_value = {
+                    "taskNum": "001",
+                    "targetPath": os.path.join(self.test_dir, "target"),
+                    "workflowPath": os.path.join(self.test_dir, "target", "MAW_workflow"),
+                    "targetKey": "test",
+                }
+                await self.orch.start_council(
+                    prompt="Test task",
+                    target_key="test",
+                    review_policy={
+                        "mode": "AI",
+                        "max_iterations": 3,
+                        "allow_request_changes": True,
+                        "require_pre_commit_approval": True,
+                        "auto_approve_council": True,
+                        "allow_l0_auto_approve": True,
+                    },
+                    mock=True,
+                )
+
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    for w in self.orch.list_workflows():
+                        if w.get("task_num"):
+                            self.assertEqual(w["task_num"], "001")
+                            return
+                self.fail("Auto-approve did not export workflow")
 
         asyncio.run(_run())
 

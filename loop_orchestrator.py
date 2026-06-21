@@ -17,6 +17,7 @@ from export import export_to_target, load_targets, validate_target, slugify_titl
 from maw_paths import get_workflow_root
 from council.council import run_council
 from council.storage import load_conversation, CONVERSATIONS_DIR
+from project_context import build_context_pack
 
 load_dotenv()
 
@@ -335,14 +336,80 @@ class LoopOrchestrator:
         asyncio.create_task(self._run_council_task(wf_id))
         return self._public_workflow(wf)
 
+    def _can_auto_approve_council(self, wf: dict[str, Any], context_pack: dict[str, Any] | None) -> tuple[bool, str]:
+        """Context-aware guard for auto_approve_council policy."""
+        policy = wf.get("review_policy", {})
+        if not policy.get("auto_approve_council"):
+            return False, "auto_approve_council disabled"
+
+        if context_pack is None:
+            return False, "context pack unavailable"
+
+        summary = context_pack.get("summary", {})
+        if summary.get("status") != "ready":
+            return False, f"context status is {summary.get('status')}"
+
+        access_issues = context_pack.get("accessIssues", [])
+        fatal_issues = [i for i in access_issues if i.get("reason", "").startswith("permission_denied")]
+        if fatal_issues:
+            return False, "fatal access issues in context pack"
+
+        # Phase 6a: only L0 blueprint is available.
+        files = context_pack.get("files", [])
+        if not files:
+            # Check if review policy explicitly allows L0-only auto approve.
+            if not policy.get("allow_l0_auto_approve", False):
+                return False, "context pack has only L0 blueprint; allow_l0_auto_approve is false"
+
+        # If user explicitly mentioned a filename in the prompt, ensure it exists in context.
+        prompt = wf.get("prompt", "")
+        all_context_paths = {f.get("path", "") for f in files}
+        all_context_paths.update(d.get("path", "") for d in context_pack.get("blueprint", {}).get("dependencies", []))
+        # Lightweight filename extraction: tokens that look like file paths.
+        for token in prompt.split():
+            if "/" in token or token.endswith(".py") or token.endswith(".js") or token.endswith(".ts"):
+                # Strip punctuation.
+                cleaned = token.strip(".,;:!?()[]{}\"'").strip()
+                if cleaned and cleaned not in all_context_paths and not any(cleaned.endswith(p) for p in all_context_paths):
+                    # Only block if the filename looks like it should be in the repo but isn't.
+                    if "." in cleaned and not cleaned.startswith("http"):
+                        return False, f"prompt references file not found in context: {cleaned}"
+
+        return True, ""
+
     async def _run_council_task(self, wf_id: str) -> None:
         wf = self._workflows.get(wf_id)
         if not wf:
             return
+        context_pack: dict[str, Any] | None = None
         try:
             self._set_state(wf, WorkflowState.COUNCIL_RUNNING)
+
+            # Context gathering phase (internal to COUNCIL_RUNNING).
+            self._append_log(wf, "context", "Scanning target project blueprint...")
+            try:
+                context_pack = build_context_pack(
+                    target_key=wf["target_key"],
+                    prompt=wf["prompt"],
+                )
+            except Exception as exc:
+                logger.exception("Context gathering failed for %s", wf_id)
+                self._set_state(wf, WorkflowState.FAILED, reason=f"Context gathering failed: {exc}")
+                return
+
+            summary = context_pack.get("summary", {})
+            self._append_log(
+                wf,
+                "context",
+                f"Context pack ready: {summary.get('totalChars', 0)} chars, "
+                f"{summary.get('includedFiles', 0)} files, L0 blueprint only",
+            )
+            for issue in context_pack.get("accessIssues", []):
+                self._append_log(wf, "context", f"Context issue: {issue.get('path')} - {issue.get('reason')}")
+
             conversation = await run_council(
                 prompt=wf["prompt"],
+                context_pack=context_pack,
                 council_models=wf.get("council_models"),
                 chairman_model=wf.get("chairman_model"),
                 title=wf["title"],
@@ -357,8 +424,8 @@ class LoopOrchestrator:
             self._persist()
 
             # Auto-approve council if enabled in review policy (gate #1)
-            policy = wf.get("review_policy", {})
-            if policy.get("auto_approve_council"):
+            can_auto, guard_reason = self._can_auto_approve_council(wf, context_pack)
+            if can_auto:
                 logger.info("Auto-approving council for %s", conversation["id"])
                 self._append_log(wf, "system", "Auto-approving council (skips gate #1)")
                 try:
@@ -371,6 +438,11 @@ class LoopOrchestrator:
                 except Exception as exc:
                     logger.exception("Auto-approve council failed: %s", exc)
                     self._set_state(wf, WorkflowState.FAILED, reason=f"Auto-approve failed: {exc}")
+            else:
+                policy = wf.get("review_policy", {})
+                if policy.get("auto_approve_council"):
+                    logger.info("Auto-approve blocked for %s: %s", conversation["id"], guard_reason)
+                    self._append_log(wf, "system", f"Auto-approve blocked: {guard_reason}; awaiting Gate #1")
         except Exception as exc:
             logger.exception("Council failed for %s", wf_id)
             self._set_state(wf, WorkflowState.FAILED, reason=f"Council failed: {exc}")

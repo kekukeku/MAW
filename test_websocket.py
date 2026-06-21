@@ -49,6 +49,7 @@ class TestWebSocket(unittest.TestCase):
         async def _setup_workflow():
             with patch("export.load_targets", return_value=self.targets_config), \
                  patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("project_context.load_targets", return_value=self.targets_config), \
                  patch("export.get_conversations_dir", return_value=self.conv_dir):
                 await self.orch.start_council(prompt="ws test", target_key="mock", mock=True)
                 conv_id = None
@@ -79,6 +80,7 @@ class TestWebSocket(unittest.TestCase):
         async def _setup_workflow():
             with patch("export.load_targets", return_value=self.targets_config), \
                  patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("project_context.load_targets", return_value=self.targets_config), \
                  patch("export.get_conversations_dir", return_value=self.conv_dir):
                 await self.orch.start_council(prompt="global ws test", target_key="mock", mock=True)
                 conv_id = None

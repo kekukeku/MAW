@@ -57,6 +57,7 @@ class TestE2EWorkflow(unittest.TestCase):
         async def _run():
             with patch("export.load_targets", return_value=self.targets_config), \
                  patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("project_context.load_targets", return_value=self.targets_config), \
                  patch("export.get_conversations_dir", return_value=self.conv_dir):
                 wf = await self.orch.start_council(
                     prompt="Add hello world endpoint",

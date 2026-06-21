@@ -306,9 +306,41 @@ def is_monitor_running(target_path):
         
     return False
 
-def render_task_markdown(task_num, title, date_str, slug, objective, files_affected, non_goals, conversation_id, message_index):
+def _derive_files_affected(files_affected_input, context_pack):
+    """Return the Files Affected section for a task markdown.
+
+    Honors explicit user input, otherwise derives from context pack.
+    """
+    if files_affected_input and files_affected_input != "To be determined by executor after repository inspection":
+        return files_affected_input
+
+    if not context_pack:
+        return "Council had no target project context. Executor must inspect the target files before changing code."
+
+    files = context_pack.get("files", [])
+    if files:
+        # L1/L2 files available.
+        lines = ["Based on council context analysis, the following files are likely affected:"]
+        for f in files:
+            lines.append(f"- `{f.get('path', '')}`")
+        return "\n".join(lines)
+
+    # Only L0 blueprint available.
+    deps = context_pack.get("blueprint", {}).get("dependencies", [])
+    if deps:
+        dep_names = ", ".join(f"`{d.get('path', '')}`" for d in deps)
+        return (
+            f"Council had only project blueprint context (dependencies: {dep_names}). "
+            "Executor must inspect the target files before changing code."
+        )
+
+    return "Council had only project blueprint context. Executor must inspect the target files before changing code."
+
+
+def render_task_markdown(task_num, title, date_str, slug, objective, files_affected, non_goals, conversation_id, message_index, context_pack=None):
     """Generate the markdown content for task_NNN.md matching agent-cowork template."""
     # Ensure relative paths only!
+    files_affected_section = _derive_files_affected(files_affected, context_pack)
     return f"""# TASK-{task_num}: {title}
 
 - **Status**: `IN_PROGRESS`
@@ -333,7 +365,7 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 
 ## 2. Files Affected
 
-{files_affected}
+{files_affected_section}
 
 ---
 
@@ -355,8 +387,66 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 **執行者指示**：完成實作後，請將 `TASKS/task_{task_num}.md` 與 `AGENT_STATE.md` 的任務狀態改為 `UNDER_REVIEW`，而非 `COMPLETED`。
 """
 
-def render_council_markdown(task_num, title, date_str, user_request, models_list, stage1_text, stage2_text, aggregate_rankings_text, stage3_text, export_options_text):
+def _render_context_summary(context_pack):
+    """Render a concise markdown summary of the context pack for council markdown."""
+    if not context_pack:
+        return "No target project context was provided to this council.\n"
+
+    summary = context_pack.get("summary", {})
+    blueprint = context_pack.get("blueprint", {})
+    lines = [
+        f"- **Context pack version**: {context_pack.get('version', 'unknown')}",
+        f"- **Target Project Key**: {context_pack.get('targetKey', '')}",
+        f"- **Target Project Path**: {context_pack.get('targetPath', '')}",
+        f"- **Status**: {summary.get('status', 'unknown')}",
+        f"- **Included files**: {summary.get('includedFiles', 0)}",
+        f"- **Total chars**: {summary.get('totalChars', 0)}",
+        f"- **Truncated**: {summary.get('truncated', False)}",
+        "",
+        "### Files Provided to Council",
+        "",
+        "| Path | Source | Chars | Truncated |",
+        "|------|--------|-------|-----------|",
+    ]
+
+    files = context_pack.get("files", [])
+    if blueprint.get("readme") or blueprint.get("readme") == "":
+        # README is part of blueprint.
+        readme_record = next((d for d in blueprint.get("dependencies", []) if d.get("path", "").lower().startswith("readme")), None)
+        if not readme_record:
+            # Synthetic README row if no explicit record.
+            files = [{"path": "README", "source": "blueprint", "chars": len(blueprint.get("readme", "")), "truncated": summary.get("truncated", False)}] + files
+
+    for dep in blueprint.get("dependencies", []):
+        files.append({
+            "path": dep.get("path", ""),
+            "source": "blueprint",
+            "chars": dep.get("chars", 0),
+            "truncated": dep.get("truncated", False),
+        })
+
+    if not files:
+        lines.append("| (none) | - | - | - |")
+    else:
+        for f in files:
+            lines.append(
+                f"| {f.get('path', '')} | {f.get('source', '')} | {f.get('chars', 0)} | {f.get('truncated', False)} |"
+            )
+
+    access_issues = context_pack.get("accessIssues", [])
+    if access_issues:
+        lines.extend(["", "### Access Issues", ""])
+        for issue in access_issues[:20]:
+            lines.append(f"- `{issue.get('path', '')}`: {issue.get('reason', '')}")
+        if len(access_issues) > 20:
+            lines.append(f"- ... and {len(access_issues) - 20} more")
+
+    return "\n".join(lines)
+
+
+def render_council_markdown(task_num, title, date_str, user_request, models_list, stage1_text, stage2_text, aggregate_rankings_text, stage3_text, export_options_text, context_pack=None):
     """Generate the readable meeting transcript markdown."""
+    context_summary_text = _render_context_summary(context_pack)
     return f"""# Council Meeting Record: TASK-{task_num}
 
 - **Council ID**: council_{task_num}
@@ -381,13 +471,19 @@ def render_council_markdown(task_num, title, date_str, user_request, models_list
 
 ---
 
-## 3. Stage 1 - Individual Responses
+## 3. Target Project Context
+
+{context_summary_text}
+
+---
+
+## 4. Stage 1 - Individual Responses
 
 {stage1_text}
 
 ---
 
-## 4. Stage 2 - Peer Rankings & Evaluations
+## 5. Stage 2 - Peer Rankings & Evaluations
 
 {stage2_text}
 
@@ -396,13 +492,13 @@ def render_council_markdown(task_num, title, date_str, user_request, models_list
 
 ---
 
-## 5. Stage 3 - Chairman Synthesis
+## 6. Stage 3 - Chairman Synthesis
 
 {stage3_text}
 
 ---
 
-## 6. Export Options
+## 7. Export Options
 
 - **Files Affected Specification**: {export_options_text.get('filesAffected', '')}
 - **Non-Goals / Special Instructions**: {export_options_text.get('nonGoals', '')}
@@ -476,6 +572,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         stage2 = assistant_msg.get("stage2")
         stage3 = assistant_msg.get("stage3")
         metadata = assistant_msg.get("metadata")
+        context_pack = conv_data.get("context_pack")
         
         if not stage1 or not stage2 or not stage3:
             raise ValueError("Target assistant message is missing Stage 1, Stage 2, or Stage 3 council results.")
@@ -513,7 +610,8 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             files_affected=files_affected,
             non_goals=non_goals,
             conversation_id=conversation_id,
-            message_index=message_index
+            message_index=message_index,
+            context_pack=context_pack,
         )
         
         # Construct provenance files
@@ -548,7 +646,8 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             stage2_text=stage2_text,
             aggregate_rankings_text=agg_rankings_text,
             stage3_text=stage3.get("response", ""),
-            export_options_text=export_opts
+            export_options_text=export_opts,
+            context_pack=context_pack,
         )
         
         council_json = {
@@ -567,6 +666,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             "stage2Metadata": metadata,
             "stage3": stage3,
             "exportOptions": export_opts,
+            "contextPack": context_pack,
             "provenance": {
                 "source": "Karpathy LLM Council",
                 "stage": "Stage 3 Chairman Synthesis",

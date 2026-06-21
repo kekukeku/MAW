@@ -8,6 +8,7 @@ from typing import Any
 from council.config import MOCK_MODE
 from council.llm_provider import query_model, query_models_parallel, LLMProviderError
 from council.storage import create_conversation_skeleton, save_conversation
+from project_context import build_prompt_envelope, compact_context_digest
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def _build_mock_council_result(
     prompt: str,
     council_models: list[str],
     chairman_model: str,
+    context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return deterministic council data for testing without API calls."""
     stage1 = [
@@ -64,6 +66,17 @@ def _build_mock_council_result(
         ),
     }
     metadata = {"aggregate_rankings": aggregate_rankings}
+    if context_pack is not None:
+        metadata["contextPackVersion"] = context_pack.get("version")
+        metadata["contextStatus"] = context_pack.get("summary", {}).get("status", "ready")
+        metadata["contextSummary"] = {
+            "includedFiles": context_pack.get("summary", {}).get("includedFiles", 0),
+            "totalChars": context_pack.get("summary", {}).get("totalChars", 0),
+        }
+    else:
+        metadata["contextPackVersion"] = None
+        metadata["contextStatus"] = "unavailable"
+        metadata["contextSummary"] = {"includedFiles": 0, "totalChars": 0}
     return {"stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata}
 
 
@@ -123,6 +136,7 @@ def compute_aggregate_rankings(
 
 async def run_council(
     prompt: str,
+    context_pack: dict[str, Any] | None = None,
     council_models: list[str] | None = None,
     chairman_model: str | None = None,
     title: str | None = None,
@@ -139,11 +153,12 @@ async def run_council(
     use_mock = MOCK_MODE if mock is None else mock
 
     conversation = create_conversation_skeleton(title or prompt[:80], prompt)
+    conversation["context_pack"] = context_pack
 
     if use_mock:
-        result = _build_mock_council_result(prompt, council_models, chairman_model)
+        result = _build_mock_council_result(prompt, council_models, chairman_model, context_pack=context_pack)
     else:
-        result = await _run_council_live(prompt, council_models, chairman_model)
+        result = await _run_council_live(prompt, council_models, chairman_model, context_pack=context_pack)
 
     assistant_message = {
         "role": "assistant",
@@ -163,12 +178,14 @@ async def _run_council_live(
     prompt: str,
     council_models: list[str],
     chairman_model: str,
+    context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute live 3-Stage council against OpenRouter."""
-    user_messages = [{"role": "user", "content": prompt}]
+    context_aware_prompt = build_prompt_envelope(prompt, context_pack)
+    user_messages = [{"role": "user", "content": context_aware_prompt}]
 
     # Stage 1: Independent responses
-    logger.info("Council Stage 1: querying %d models", len(council_models))
+    logger.info("Council Stage 1: querying %d models with context pack", len(council_models))
     stage1_raw = await query_models_parallel(council_models, user_messages)
     stage1 = []
     errors = []
@@ -187,11 +204,13 @@ async def _run_council_live(
         f"### Response {chr(65 + i)}\n{item['response']}"
         for i, item in enumerate(stage1)
     )
+    context_digest = compact_context_digest(context_pack) if context_pack else "No target project context provided."
     ranking_prompt = (
         "You are evaluating anonymous responses to a user request. "
         "Rank ALL responses from best (1) to worst. "
         "Provide your ranking as a numbered list.\n\n"
-        f"**Original Request**:\n{prompt}\n\n"
+        f"**Original Context-Aware Request**:\n{context_aware_prompt}\n\n"
+        f"**Project Context Digest**:\n{context_digest}\n\n"
         f"**Responses to Rank**:\n{anonymized}"
     )
     ranking_messages = [{"role": "user", "content": ranking_prompt}]
@@ -205,12 +224,23 @@ async def _run_council_live(
             stage2.append({"model": item["model"], "ranking": item["response"]})
 
     metadata = {"aggregate_rankings": compute_aggregate_rankings(stage1, stage2)}
+    if context_pack is not None:
+        metadata["contextPackVersion"] = context_pack.get("version")
+        metadata["contextStatus"] = context_pack.get("summary", {}).get("status", "ready")
+        metadata["contextSummary"] = {
+            "includedFiles": context_pack.get("summary", {}).get("includedFiles", 0),
+            "totalChars": context_pack.get("summary", {}).get("totalChars", 0),
+        }
+    else:
+        metadata["contextPackVersion"] = None
+        metadata["contextStatus"] = "unavailable"
+        metadata["contextSummary"] = {"includedFiles": 0, "totalChars": 0}
 
     # Stage 3: Chairman synthesis
     logger.info("Council Stage 3: chairman synthesis")
     top_models = [r["model"] for r in metadata["aggregate_rankings"][:3]]
     synthesis_context = (
-        f"**User Request**:\n{prompt}\n\n"
+        f"**Context-Aware User Request**:\n{context_aware_prompt}\n\n"
         f"**Stage 1 Responses**:\n"
         + "\n---\n".join(f"### {s['model']}\n{s['response']}" for s in stage1)
         + f"\n\n**Aggregate Rankings**:\n"
@@ -225,6 +255,9 @@ async def _run_council_live(
             "content": (
                 "You are the chairman of an LLM council. Synthesize the best implementation plan "
                 "from the council deliberation below. Be specific about files, steps, and acceptance criteria.\n\n"
+                "IMPORTANT: If only the project blueprint (directory tree, README, and dependency files) "
+                "is available, plan at the project level and do not invent specific function bodies, "
+                "file contents, or exact line numbers that are not present in the provided context.\n\n"
                 + synthesis_context
             ),
         }

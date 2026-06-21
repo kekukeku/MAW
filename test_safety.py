@@ -131,6 +131,7 @@ class TestSafety(unittest.TestCase):
         async def _run():
             with patch("export.load_targets", return_value=self.targets_config), \
                  patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("project_context.load_targets", return_value=self.targets_config), \
                  patch("export.get_conversations_dir", return_value=self.conv_dir):
                 await self.orch.start_council(
                     prompt="auto approve test",
@@ -141,6 +142,7 @@ class TestSafety(unittest.TestCase):
                         "allow_request_changes": False,
                         "require_pre_commit_approval": True,
                         "auto_approve_council": True,
+                        "allow_l0_auto_approve": True,
                     },
                     mock=True,
                 )
@@ -217,6 +219,7 @@ class TestSafety(unittest.TestCase):
         async def _run():
             with patch("export.load_targets", return_value=self.targets_config), \
                  patch("loop_orchestrator.load_targets", return_value=self.targets_config), \
+                 patch("project_context.load_targets", return_value=self.targets_config), \
                  patch("export.get_conversations_dir", return_value=self.conv_dir):
                 await self.orch.start_council(
                     prompt="human review test",

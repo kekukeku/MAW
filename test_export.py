@@ -8,7 +8,11 @@ from datetime import datetime
 import re
 
 # Import target functions to test
-from export import slugify_title, allocate_task_num, validate_target, acquire_export_lock, release_export_lock, append_registry_row_atomic
+from export import (
+    slugify_title, allocate_task_num, validate_target, acquire_export_lock,
+    release_export_lock, append_registry_row_atomic, render_council_markdown,
+    render_task_markdown, _derive_files_affected, _render_context_summary,
+)
 from maw_paths import WORKFLOW_DIR_NAME
 
 class TestMAWExportAdapter(unittest.TestCase):
@@ -147,6 +151,83 @@ Some headers.
         self.assertIn("| **TASK-003** | `IN_PROGRESS` | [task/task_003_test-slug](./TASKS/task_003.md) | 2026-06-20 |", content)
         self.assertIn("## Footer", content)
         self.assertIn("| **TASK-002** | `MERGED` |", content)
+
+    def test_render_council_markdown_includes_context(self):
+        context_pack = {
+            "version": 1,
+            "targetKey": "test",
+            "targetPath": "/tmp/test",
+            "summary": {"status": "ready", "totalChars": 1000, "truncated": False, "includedFiles": 2, "excludedFiles": 5},
+            "blueprint": {
+                "tree": "test/\n└── src",
+                "readme": "# Test",
+                "dependencies": [{"path": "package.json", "source": "blueprint", "chars": 200, "truncated": False, "content": "{}"}],
+            },
+            "files": [],
+            "accessIssues": [{"path": ".env", "reason": "excluded_secret:.env"}],
+        }
+        md = render_council_markdown(
+            task_num="001",
+            title="Test",
+            date_str="2026-06-20",
+            user_request="Do something",
+            models_list={"council": ["m1"], "chairman": "c1"},
+            stage1_text="stage1",
+            stage2_text="stage2",
+            aggregate_rankings_text="rank",
+            stage3_text="stage3",
+            export_options_text={"targetKey": "test", "filesAffected": "", "nonGoals": ""},
+            context_pack=context_pack,
+        )
+        self.assertIn("## 3. Target Project Context", md)
+        self.assertIn("package.json", md)
+        self.assertIn(".env", md)
+        self.assertIn("stage3", md)
+
+    def test_derive_files_affected_with_user_input(self):
+        context_pack = {
+            "files": [{"path": "src/main.py"}],
+            "blueprint": {"dependencies": []},
+        }
+        result = _derive_files_affected("src/custom.py", context_pack)
+        self.assertEqual(result, "src/custom.py")
+
+    def test_derive_files_affected_from_context_files(self):
+        context_pack = {
+            "files": [{"path": "src/main.py"}, {"path": "src/auth.py"}],
+            "blueprint": {"dependencies": []},
+        }
+        result = _derive_files_affected("To be determined by executor after repository inspection", context_pack)
+        self.assertIn("src/main.py", result)
+        self.assertIn("src/auth.py", result)
+
+    def test_derive_files_affected_l0_only(self):
+        context_pack = {
+            "files": [],
+            "blueprint": {"dependencies": [{"path": "package.json"}]},
+        }
+        result = _derive_files_affected("To be determined by executor after repository inspection", context_pack)
+        self.assertIn("project blueprint context", result)
+        self.assertIn("package.json", result)
+
+    def test_render_task_markdown_with_context(self):
+        context_pack = {
+            "files": [{"path": "src/main.py"}],
+            "blueprint": {"dependencies": []},
+        }
+        md = render_task_markdown(
+            task_num="001",
+            title="Test",
+            date_str="2026-06-20",
+            slug="test",
+            objective="Do it",
+            files_affected="To be determined by executor after repository inspection",
+            non_goals="None",
+            conversation_id="conv-123",
+            message_index=1,
+            context_pack=context_pack,
+        )
+        self.assertIn("src/main.py", md)
 
 if __name__ == "__main__":
     unittest.main()
