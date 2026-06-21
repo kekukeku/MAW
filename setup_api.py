@@ -276,6 +276,13 @@ def patch_project_gitignore(project_path: str) -> dict[str, Any]:
     return {"patched": True, "path": gitignore_path, "message": "Created .gitignore"}
 
 
+def _is_masked(value: str) -> bool:
+    if not value:
+        return False
+    value = value.strip()
+    return "..." in value or value == "***"
+
+
 def save_setup(
     *,
     target_path: str | None = None,
@@ -296,16 +303,16 @@ def save_setup(
 
     if llm_provider:
         set_key(ENV_PATH, "LLM_PROVIDER", llm_provider)
-    if openrouter_key:
+    if openrouter_key and not _is_masked(openrouter_key):
         set_key(ENV_PATH, "OPENROUTER_API_KEY", openrouter_key)
     if litellm_base:
         set_key(ENV_PATH, "LITELLM_API_BASE", litellm_base)
-    if litellm_key:
+    if litellm_key and not _is_masked(litellm_key):
         set_key(ENV_PATH, "LITELLM_API_KEY", litellm_key)
     if direct_keys:
         for vendor, env_key in DIRECT_VENDOR_KEYS.items():
             value = direct_keys.get(vendor, "").strip()
-            if value:
+            if value and not _is_masked(value):
                 set_key(ENV_PATH, env_key, value)
     if target_path:
         set_key(ENV_PATH, "TARGET_PROJECT_PATH", get_project_root(target_path))

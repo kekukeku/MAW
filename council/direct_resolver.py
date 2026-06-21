@@ -75,6 +75,23 @@ def _region_label(vendor_label: str, region: str) -> str:
     return f"{vendor_label} {suffix}"
 
 
+def _parse_probe_error(status_code: int, text: str) -> str:
+    if status_code in (401, 403):
+        return "auth"
+    lower_text = text.lower() if text else ""
+    if (
+        "quota" in lower_text
+        or "balance" in lower_text
+        or "insufficient_quota" in lower_text
+        or "resource_exhausted" in lower_text
+        or "out_of_balance" in lower_text
+        or "exceeded your current quota" in lower_text
+        or status_code == 402
+    ):
+        return "餘額不足或額度限制 (Quota Exceeded)"
+    return f"HTTP {status_code}"
+
+
 async def _probe_openai_compatible(
     base_url: str,
     api_key: str,
@@ -90,11 +107,9 @@ async def _probe_openai_compatible(
     try:
         async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
-        if resp.status_code in (401, 403):
-            return False, "auth"
         if 200 <= resp.status_code < 300:
             return True, None
-        return False, f"HTTP {resp.status_code}"
+        return False, _parse_probe_error(resp.status_code, resp.text)
     except httpx.RequestError as exc:
         return False, str(exc)
 
@@ -118,11 +133,9 @@ async def _probe_anthropic(
     try:
         async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
-        if resp.status_code in (401, 403):
-            return False, "auth"
         if 200 <= resp.status_code < 300:
             return True, None
-        return False, f"HTTP {resp.status_code}"
+        return False, _parse_probe_error(resp.status_code, resp.text)
     except httpx.RequestError as exc:
         return False, str(exc)
 
@@ -200,8 +213,12 @@ async def resolve_vendor(
             }
         last_error = err or "probe failed"
 
+    err_label = last_error
+    if last_error == "auth":
+        err_label = "金鑰無效或授權失敗 (auth)"
+
     raise DirectResolverError(
-        f"{vendor_label} API Key 無法連線候選節點，請檢查 Key 是否有效、網路是否可達（{last_error}）"
+        f"{vendor_label} API Key 無法連線候選節點，請檢查 Key 是否有效、網路是否可達（{err_label}）"
     )
 
 

@@ -99,13 +99,13 @@
     "label": "Grok / xAI",
     "env_key": "GROK_API_KEY",
     "api_style": "openai_compatible",
-    "models": ["grok-2-latest", "grok-beta"],
+    "models": ["grok-latest", "grok-4.20-non-reasoning", "grok-4.20-reasoning", "grok-build-0.1"],
     "endpoints": [
       {
         "id": "xai_main",
         "region": "default",
         "base_url": "https://api.x.ai/v1",
-        "probe_model": "grok-2-latest"
+        "probe_model": "grok-latest"
       }
     ]
   }

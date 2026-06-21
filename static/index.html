@@ -125,22 +125,22 @@
             <label>LiteLLM 基礎 API 位址</label>
             <input id="litellm-base" value="http://localhost:4000">
             <label>LiteLLM API 金鑰（選填）</label>
-            <input id="litellm-key" type="password" placeholder="選填 proxy 金鑰">
+            <input id="litellm-key" type="password" placeholder="選填 proxy 金鑰" autocomplete="new-password">
           </div>
           <div id="section-openrouter" class="provider-section mode-hidden">
             <label>OpenRouter API 金鑰</label>
-            <input id="openrouter-key" type="password" placeholder="sk-or-...">
+            <input id="openrouter-key" type="password" placeholder="sk-or-..." autocomplete="new-password">
           </div>
           <div id="section-direct" class="provider-section mode-hidden">
             <p style="font-size:12px;color:var(--muted);margin:6px 0">填寫金鑰以啟用對應廠商模型。月之暗面 (Kimi) 與通義千問 (Qwen) 會自動識別國內/國際端點。</p>
             <div class="direct-keys">
-              <div><label>OpenAI</label><input id="key-openai" type="password" placeholder="OPENAI_API_KEY"></div>
-              <div><label>Anthropic</label><input id="key-anthropic" type="password" placeholder="ANTHROPIC_API_KEY"></div>
-              <div><label>Google Gemini</label><input id="key-google" type="password" placeholder="GOOGLE_API_KEY"></div>
-              <div><label>DeepSeek</label><input id="key-deepseek" type="password" placeholder="DEEPSEEK_API_KEY"></div>
-              <div><label>Kimi / 月之暗面</label><input id="key-kimi" type="password" placeholder="KIMI_API_KEY"></div>
-              <div><label>Qwen / 通義千問</label><input id="key-qwen" type="password" placeholder="QWEN_API_KEY"></div>
-              <div><label>Grok / xAI</label><input id="key-grok" type="password" placeholder="GROK_API_KEY"></div>
+              <div><label>OpenAI</label><input id="key-openai" type="password" placeholder="OPENAI_API_KEY" autocomplete="new-password"></div>
+              <div><label>Anthropic</label><input id="key-anthropic" type="password" placeholder="ANTHROPIC_API_KEY" autocomplete="new-password"></div>
+              <div><label>Google Gemini</label><input id="key-google" type="password" placeholder="GOOGLE_API_KEY" autocomplete="new-password"></div>
+              <div><label>DeepSeek</label><input id="key-deepseek" type="password" placeholder="DEEPSEEK_API_KEY" autocomplete="new-password"></div>
+              <div><label>Kimi / 月之暗面</label><input id="key-kimi" type="password" placeholder="KIMI_API_KEY" autocomplete="new-password"></div>
+              <div><label>Qwen / 通義千問</label><input id="key-qwen" type="password" placeholder="QWEN_API_KEY" autocomplete="new-password"></div>
+              <div><label>Grok / xAI</label><input id="key-grok" type="password" placeholder="GROK_API_KEY" autocomplete="new-password"></div>
             </div>
             <div id="vendor-results" style="margin-top:8px"></div>
           </div>
@@ -364,6 +364,14 @@
       setupStatus = await res.json();
       document.getElementById('llm-provider').value = setupStatus.llmProvider || 'litellm';
       document.getElementById('litellm-base').value = setupStatus.keys?.litellmBase || 'http://localhost:4000';
+      document.getElementById('litellm-key').value = setupStatus.keys?.litellmKey || '';
+      document.getElementById('openrouter-key').value = setupStatus.keys?.openrouter || '';
+      if (setupStatus.keys?.direct) {
+        DIRECT_VENDORS.forEach(v => {
+          const el = document.getElementById(`key-${v}`);
+          if (el) el.value = setupStatus.keys.direct[v] || '';
+        });
+      }
       onProviderChange();
       renderVendorResults(setupStatus.vendorRoutes);
       const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget) || setupStatus.projects?.[0];
