@@ -507,11 +507,8 @@ def build_context_pack(
 
     blueprint: dict[str, Any] = {
         "tree": tree,
+        "readme": readme_text or "",
     }
-    if readme_text is not None:
-        blueprint["readme"] = readme_text
-    else:
-        blueprint["readme"] = ""
     blueprint["dependencies"] = dependency_records
 
     summary = {
@@ -568,7 +565,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
     summary = context_pack.get("summary", {})
     blueprint = context_pack.get("blueprint", {})
 
-    lines: list[str] = [
+    context_lines: list[str] = [
         "# Target Project Context",
         "",
         "## Context Status",
@@ -589,7 +586,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
 
     readme = blueprint.get("readme", "")
     if readme:
-        lines.extend([
+        context_lines.extend([
             "### README",
             readme,
             "",
@@ -597,12 +594,12 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
 
     deps = blueprint.get("dependencies", [])
     if deps:
-        lines.append("### Dependencies / Config Files")
+        context_lines.append("### Dependencies / Config Files")
         for dep in deps:
             path = dep.get("path", "")
             content = dep.get("content", "")
             truncated_marker = " (truncated)" if dep.get("truncated") else ""
-            lines.extend([
+            context_lines.extend([
                 f"#### {path}{truncated_marker}",
                 "```text",
                 content,
@@ -610,10 +607,9 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
                 "",
             ])
 
-    # Phase 6a: files section is empty but keep schema placeholder.
     files = context_pack.get("files", [])
     if files:
-        lines.extend([
+        context_lines.extend([
             "## Selected / Scout Files",
             "",
         ])
@@ -621,7 +617,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
             path = f.get("path", "")
             source = f.get("source", "")
             content = f.get("content", "")
-            lines.extend([
+            context_lines.extend([
                 f"### File: {path} (source: {source})",
                 "```text",
                 content,
@@ -629,7 +625,12 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
                 "",
             ])
 
-    lines.extend([
+    context_str = "\n".join(context_lines)
+    max_total = context_pack.get("policy", {}).get("maxTotalChars", 50000)
+    if len(context_str) > max_total:
+        context_str = context_str[:max_total] + "\n\n[... Context truncated due to character budget limit ...]\n\n"
+
+    boundary_lines = [
         "## Context Boundaries",
         "- You may only make concrete claims based on the provided context.",
         "- If the context is insufficient, explicitly list the missing files or information.",
@@ -640,9 +641,9 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
         "# User Request",
         "",
         prompt,
-    ])
+    ]
 
-    return "\n".join(lines)
+    return context_str + "\n" + "\n".join(boundary_lines)
 
 
 def compact_context_digest(context_pack: dict[str, Any]) -> str:

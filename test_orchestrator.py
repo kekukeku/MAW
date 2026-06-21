@@ -252,6 +252,29 @@ class TestOrchestrator(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_context_gathering_failure_fails_without_conversation(self):
+        async def _run():
+            with self._targets_patch(), \
+                 patch("loop_orchestrator.build_context_pack", side_effect=RuntimeError("boom")):
+                wf = await self.orch.start_council(
+                    prompt="Test task",
+                    target_key="test",
+                    mock=True,
+                )
+                wf_id = wf["workflow_id"]
+
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    current = self.orch.get_status(wf_id)
+                    if current["state"] == WorkflowState.FAILED.value:
+                        self.assertIsNone(current.get("conversation_id"))
+                        self.assertIn("Context gathering failed", current.get("reason", ""))
+                        return
+
+                self.fail("Workflow did not fail after context gathering error")
+
+        asyncio.run(_run())
+
     def test_auto_approve_blocked_for_l0_only(self):
         async def _run():
             with self._targets_patch():

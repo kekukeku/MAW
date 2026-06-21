@@ -184,6 +184,24 @@ Some headers.
         self.assertIn(".env", md)
         self.assertIn("stage3", md)
 
+    def test_render_context_summary_omits_missing_readme_row(self):
+        context_pack = {
+            "version": 1,
+            "targetKey": "test",
+            "targetPath": "/tmp/test",
+            "summary": {"status": "ready", "totalChars": 300, "truncated": False, "includedFiles": 1, "excludedFiles": 0},
+            "blueprint": {
+                "tree": "test/\n└── src",
+                "readme": "",
+                "dependencies": [{"path": "package.json", "source": "blueprint", "chars": 200, "truncated": False, "content": "{}"}],
+            },
+            "files": [],
+            "accessIssues": [],
+        }
+        summary = _render_context_summary(context_pack)
+        self.assertIn("| package.json | blueprint | 200 | False |", summary)
+        self.assertNotIn("| README | blueprint | 0 | False |", summary)
+
     def test_derive_files_affected_with_user_input(self):
         context_pack = {
             "files": [{"path": "src/main.py"}],

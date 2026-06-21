@@ -410,12 +410,12 @@ def _render_context_summary(context_pack):
     ]
 
     files = context_pack.get("files", [])
-    if blueprint.get("readme") or blueprint.get("readme") == "":
+    if blueprint.get("readme"):
         # README is part of blueprint.
         readme_record = next((d for d in blueprint.get("dependencies", []) if d.get("path", "").lower().startswith("readme")), None)
         if not readme_record:
             # Synthetic README row if no explicit record.
-            files = [{"path": "README", "source": "blueprint", "chars": len(blueprint.get("readme", "")), "truncated": summary.get("truncated", False)}] + files
+            files = [{"path": "README", "source": "blueprint", "chars": len(blueprint.get("readme")), "truncated": summary.get("truncated", False)}] + files
 
     for dep in blueprint.get("dependencies", []):
         files.append({
