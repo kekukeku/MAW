@@ -162,9 +162,23 @@
         </div>
         <div>
           <label>執行官 (Executor)</label>
-          <select id="executor-agent" onchange="onAgentChange()"></select>
+          <select id="executor-agent" onchange="onAgentChange()">
+            <option value="antigravity">Antigravity</option>
+            <option value="openwork">Openwork</option>
+            <option value="grok_build">Grok Build</option>
+            <option value="claude_cowork">Claude Cowork</option>
+            <option value="codex">Codex</option>
+            <option value="custom">Custom</option>
+          </select>
           <label>判官 (Reviewer)</label>
-          <select id="reviewer-agent" onchange="onAgentChange()"></select>
+          <select id="reviewer-agent" onchange="onAgentChange()">
+            <option value="grok_build">Grok Build</option>
+            <option value="antigravity">Antigravity</option>
+            <option value="openwork">Openwork</option>
+            <option value="claude_cowork">Claude Cowork</option>
+            <option value="codex">Codex</option>
+            <option value="custom">Custom</option>
+          </select>
           <div id="custom-agent-fields" class="mode-hidden">
             <label>自訂執行者指令</label>
             <input id="custom-executor-cmd" placeholder="例如: python3 my_executor.py --task $MAW_TASK_NUM">
@@ -444,6 +458,14 @@
       await loadLlmModels();
       const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget);
       if (project) renderHealth(project.health);
+      renderAgentSelects(setupStatus.agents);
+      if (setupStatus.defaultAgents) {
+        document.getElementById('executor-agent').value = setupStatus.defaultAgents.executor || 'antigravity';
+        document.getElementById('reviewer-agent').value = setupStatus.defaultAgents.reviewer || 'grok_build';
+        document.getElementById('custom-executor-cmd').value = setupStatus.defaultAgents.customExecutorCmd || '';
+        document.getElementById('custom-reviewer-cmd').value = setupStatus.defaultAgents.customReviewerCmd || '';
+        onAgentChange();
+      }
     }
 
     async function loadLlmModels() {
