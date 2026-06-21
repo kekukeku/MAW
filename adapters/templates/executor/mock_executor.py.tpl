@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock executor: simulates Antigravity work and moves task to UNDER_REVIEW."""
+"""Mock executor for {{AGENT_LABEL}} ({{AGENT_ID}})."""
 
 import argparse
 import os
@@ -10,21 +10,21 @@ import time
 
 WORKFLOW_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.dirname(WORKFLOW_ROOT)
+AGENT_ID = "{{AGENT_ID}}"
+AGENT_LABEL = "{{AGENT_LABEL}}"
 
 
 def run_git(args, check=True):
-    result = subprocess.run(
+    return subprocess.run(
         ["git", *args],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         check=check,
     )
-    return result
 
 
 def ensure_git_repo() -> None:
-    """Initialize a git repo if the target project does not have one."""
     if os.path.isdir(os.path.join(PROJECT_ROOT, ".git")):
         return
     run_git(["init", "-b", "main"])
@@ -48,8 +48,7 @@ def update_status(task_num: str, new_status: str) -> None:
 
 
 def slugify(title: str) -> str:
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug[:48] or "task"
 
 
@@ -62,10 +61,9 @@ def main() -> int:
     branch = f"task/task_{task_num}_{slugify(args.title)}"
 
     ensure_git_repo()
-
-    print(f"[mock-executor] Starting TASK-{task_num}")
+    print(f"[{AGENT_ID}] Starting TASK-{task_num} via {AGENT_LABEL}")
     time.sleep(0.3)
-    print(f"[mock-executor] Creating branch {branch}")
+    print(f"[{AGENT_ID}] Creating branch {branch}")
 
     base_branch = "main"
     result = run_git(["branch", "--show-current"], check=False)
@@ -76,7 +74,7 @@ def main() -> int:
     run_git(["branch", "-D", branch], check=False)
     run_git(["checkout", "-b", branch])
 
-    print(f"[mock-executor] Implementing changes on {branch}...")
+    print(f"[{AGENT_ID}] Implementing changes on {branch}...")
     time.sleep(0.3)
 
     task_file = os.path.join(WORKFLOW_ROOT, "TASKS", f"task_{task_num}.md")
@@ -90,16 +88,14 @@ def main() -> int:
     impl_file = os.path.join(PROJECT_ROOT, "src", "mock_impl.txt")
     os.makedirs(os.path.dirname(impl_file), exist_ok=True)
     with open(impl_file, "w", encoding="utf-8") as f:
-        f.write(f"# TASK-{task_num}\nMock implementation for: {args.title}\n")
+        f.write(f"# TASK-{task_num}\nMock implementation by {AGENT_LABEL}: {args.title}\n")
 
     update_status(task_num, "UNDER_REVIEW")
-
     run_git(["add", "-A"])
     run_git(["commit", "-m", f"TASK-{task_num}: {args.title}"])
-
     run_git(["checkout", base_branch])
 
-    print(f"[mock-executor] TASK-{task_num} moved to UNDER_REVIEW on branch {branch}")
+    print(f"[{AGENT_ID}] TASK-{task_num} moved to UNDER_REVIEW on branch {branch}")
     return 0
 
 

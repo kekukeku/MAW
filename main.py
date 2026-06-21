@@ -130,12 +130,16 @@ class SetupSaveRequest(BaseModel):
     directKeys: Optional[DirectKeysRequest] = None
     executorId: Optional[str] = None
     reviewerId: Optional[str] = None
+    customExecutorCmd: Optional[str] = None
+    customReviewerCmd: Optional[str] = None
 
 
 class SetupInstallAdaptersRequest(BaseModel):
     projectPath: str
     executorId: str = "antigravity"
     reviewerId: str = "grok_build"
+    customExecutorCmd: Optional[str] = ""
+    customReviewerCmd: Optional[str] = ""
 
 
 @app.get("/")
@@ -344,7 +348,8 @@ async def setup_status():
 
 @app.get("/api/setup/agents")
 async def setup_agents():
-    return {"agents": setup_api.AGENT_REGISTRY}
+    from adapters.installer import list_agents
+    return {"agents": list_agents()}
 
 
 @app.get("/api/setup/llm-models")
@@ -396,6 +401,8 @@ async def setup_save(req: SetupSaveRequest):
         direct_keys=direct_keys,
         executor_id=req.executorId,
         reviewer_id=req.reviewerId,
+        custom_executor_cmd=req.customExecutorCmd,
+        custom_reviewer_cmd=req.customReviewerCmd,
     )
 
 
@@ -410,8 +417,12 @@ async def setup_pick_folder():
 @app.post("/api/setup/install-adapters")
 async def setup_install_adapters(req: SetupInstallAdaptersRequest):
     try:
-        return setup_api.install_adapters_stub(
-            req.projectPath, req.executorId, req.reviewerId
+        return setup_api.install_project_adapters(
+            req.projectPath,
+            req.executorId,
+            req.reviewerId,
+            custom_executor_cmd=req.customExecutorCmd or "",
+            custom_reviewer_cmd=req.customReviewerCmd or "",
         )
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))

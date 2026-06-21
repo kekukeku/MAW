@@ -43,7 +43,7 @@ class TestMAWExportAdapter(unittest.TestCase):
             os.makedirs(os.path.join(workflow, d), exist_ok=True)
         with open(os.path.join(workflow, "AGENT_STATE.md"), "w") as f:
             f.write("# Central Registry\n| Task ID | State | Linked PR |\n| :--- | :--- | :--- |\n")
-        with open(os.path.join(workflow, "scripts", "trigger_antigravity.py"), "w") as f:
+        with open(os.path.join(workflow, "scripts", "trigger_executor.py"), "w") as f:
             f.write("# executor\n")
         with open(os.path.join(workflow, "agent-runner", "trigger-review.js"), "w") as f:
             f.write("// reviewer\n")

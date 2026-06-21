@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "openwork",
+      "label": "Openwork",
+      "kind": "gui",
+      "priority": 1,
+      "executor_template": "templates/executor/mock_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/mock_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    },
+    {
+      "id": "grok_build",
+      "label": "Grok Build",
+      "kind": "gui",
+      "priority": 1,
+      "executor_template": "templates/executor/mock_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/mock_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    },
+    {
+      "id": "antigravity",
+      "label": "Antigravity",
+      "kind": "gui",
+      "priority": 2,
+      "executor_template": "templates/executor/mock_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/mock_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "kind": "gui",
+      "priority": 2,
+      "executor_template": "templates/executor/mock_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/mock_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    },
+    {
+      "id": "claude_cowork",
+      "label": "Claude Cowork",
+      "kind": "gui",
+      "priority": 2,
+      "executor_template": "templates/executor/mock_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/mock_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    },
+    {
+      "id": "custom",
+      "label": "Custom",
+      "kind": "custom",
+      "priority": 3,
+      "executor_template": "templates/executor/custom_executor.py.tpl",
+      "reviewer_template": "templates/reviewer/custom_review.js.tpl",
+      "router_template": "templates/reviewer/mock_route.js.tpl"
+    }
+  ]
+}

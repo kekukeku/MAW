@@ -57,7 +57,7 @@ target-project/
 └── MAW_workflow/
     ├── AGENT_STATE.md
     ├── TASKS/  PLANNING/  REVIEWS/
-    ├── scripts/trigger_antigravity.py
+    ├── scripts/trigger_executor.py
     └── agent-runner/trigger-review.js, route-review-decision.js
 ```
 

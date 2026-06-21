@@ -133,9 +133,15 @@
         </div>
         <div>
           <label>Executor Agent</label>
-          <select id="executor-agent"></select>
+          <select id="executor-agent" onchange="onAgentChange()"></select>
           <label>Reviewer Agent</label>
-          <select id="reviewer-agent"></select>
+          <select id="reviewer-agent" onchange="onAgentChange()"></select>
+          <div id="custom-agent-fields" class="mode-hidden">
+            <label>Custom Executor Command</label>
+            <input id="custom-executor-cmd" placeholder="e.g. python3 my_executor.py --task $MAW_TASK_NUM">
+            <label>Custom Reviewer Command</label>
+            <input id="custom-reviewer-cmd" placeholder="e.g. node my_reviewer.js $MAW_TASK_NUM">
+          </div>
           <div class="actions">
             <button class="btn btn-secondary" onclick="installAdapters()">Install Agent Scripts</button>
           </div>
@@ -307,6 +313,13 @@
       updateLaunchButton();
     }
 
+    function onAgentChange() {
+      const exec = document.getElementById('executor-agent').value;
+      const rev = document.getElementById('reviewer-agent').value;
+      const show = exec === 'custom' || rev === 'custom';
+      document.getElementById('custom-agent-fields').classList.toggle('mode-hidden', !show);
+    }
+
     function renderAgentSelects(agents) {
       const exec = document.getElementById('executor-agent');
       const rev = document.getElementById('reviewer-agent');
@@ -314,6 +327,7 @@
       exec.innerHTML = opts;
       rev.innerHTML = opts;
       rev.value = 'grok_build';
+      onAgentChange();
     }
 
     async function loadSetupStatus() {
@@ -332,6 +346,9 @@
       if (setupStatus.defaultAgents) {
         document.getElementById('executor-agent').value = setupStatus.defaultAgents.executor || 'antigravity';
         document.getElementById('reviewer-agent').value = setupStatus.defaultAgents.reviewer || 'grok_build';
+        document.getElementById('custom-executor-cmd').value = setupStatus.defaultAgents.customExecutorCmd || '';
+        document.getElementById('custom-reviewer-cmd').value = setupStatus.defaultAgents.customReviewerCmd || '';
+        onAgentChange();
       }
       if (setupStatus.llmTested) {
         document.getElementById('llm-test-status').textContent = setupStatus.llmTestedAt
@@ -357,6 +374,8 @@
         directKeys: Object.keys(directKeys).length ? directKeys : undefined,
         executorId: document.getElementById('executor-agent').value,
         reviewerId: document.getElementById('reviewer-agent').value,
+        customExecutorCmd: document.getElementById('custom-executor-cmd').value.trim() || undefined,
+        customReviewerCmd: document.getElementById('custom-reviewer-cmd').value.trim() || undefined,
       };
     }
 
@@ -390,6 +409,8 @@
           projectPath: path,
           executorId: document.getElementById('executor-agent').value,
           reviewerId: document.getElementById('reviewer-agent').value,
+          customExecutorCmd: document.getElementById('custom-executor-cmd').value.trim(),
+          customReviewerCmd: document.getElementById('custom-reviewer-cmd').value.trim(),
         }),
       });
       if (!res.ok) {

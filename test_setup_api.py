@@ -22,7 +22,7 @@ class TestSetupAPI(unittest.TestCase):
         os.makedirs(os.path.join(self.workflow, "REVIEWS"), exist_ok=True)
         with open(os.path.join(self.workflow, "AGENT_STATE.md"), "w") as f:
             f.write("| Task ID | State |\n| :--- | :--- |\n")
-        with open(os.path.join(self.workflow, "scripts", "trigger_antigravity.py"), "w") as f:
+        with open(os.path.join(self.workflow, "scripts", "trigger_executor.py"), "w") as f:
             f.write("# ok")
         with open(os.path.join(self.workflow, "agent-runner", "trigger-review.js"), "w") as f:
             f.write("// ok")

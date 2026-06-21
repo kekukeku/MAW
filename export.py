@@ -72,7 +72,7 @@ def validate_target(target_path):
         ("TASKS", "dir"),
         ("PLANNING", "dir"),
         ("REVIEWS", "dir"),
-        ("scripts/trigger_antigravity.py", "file"),
+        ("scripts/trigger_executor.py", "file"),
         ("agent-runner/trigger-review.js", "file"),
         ("agent-runner/route-review-decision.js", "file"),
     ]

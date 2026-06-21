@@ -477,7 +477,7 @@ class LoopOrchestrator:
         if not project_path or not workflow_path:
             self._set_state(wf, WorkflowState.FAILED, reason="Missing target or workflow path")
             return
-        script = os.path.join(workflow_path, "scripts", "trigger_antigravity.py")
+        script = os.path.join(workflow_path, "scripts", "trigger_executor.py")
         if not os.path.isfile(script):
             self._set_state(wf, WorkflowState.FAILED, reason=f"Missing executor script: {script}")
             return

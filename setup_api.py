@@ -15,6 +15,7 @@ from maw_paths import WORKFLOW_DIR_NAME, get_project_root, get_workflow_root
 from export import validate_target as _validate_contract
 from council.direct_resolver import load_vendors, resolve_all_configured_vendors
 from council.llm_provider import model_vendor
+from adapters.installer import install_adapters, list_agents
 
 MAW_ROOT = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(MAW_ROOT, ".env")
@@ -33,16 +34,6 @@ DIRECT_VENDOR_KEYS = {
     "qwen": "QWEN_API_KEY",
     "grok": "GROK_API_KEY",
 }
-
-AGENT_REGISTRY = [
-    {"id": "openwork", "label": "Openwork", "kind": "gui", "priority": 1},
-    {"id": "grok_build", "label": "Grok Build", "kind": "gui", "priority": 1},
-    {"id": "antigravity", "label": "Antigravity", "kind": "gui", "priority": 2},
-    {"id": "codex", "label": "Codex", "kind": "gui", "priority": 2},
-    {"id": "claude_cowork", "label": "Claude Cowork", "kind": "gui", "priority": 2},
-    {"id": "custom", "label": "Custom", "kind": "custom", "priority": 3},
-]
-
 
 def _mask_key(value: str) -> str:
     if not value:
@@ -133,6 +124,8 @@ def _get_project_agents(targets: dict[str, Any], key: str) -> dict[str, str]:
     return {
         "executor": agents.get("executor", "antigravity"),
         "reviewer": agents.get("reviewer", "grok_build"),
+        "customExecutorCmd": agents.get("custom_executor_cmd", ""),
+        "customReviewerCmd": agents.get("custom_reviewer_cmd", ""),
     }
 
 
@@ -193,7 +186,7 @@ def get_setup_status() -> dict[str, Any]:
     }
 
     return {
-        "mawVersion": "0.6-phase2",
+        "mawVersion": "0.6-phase3",
         "llmProvider": env.get("LLM_PROVIDER", "litellm"),
         "llmTested": setup_state.get("llm_test_ok", False),
         "llmTestedAt": setup_state.get("llm_tested_at"),
@@ -207,7 +200,7 @@ def get_setup_status() -> dict[str, Any]:
         "defaultTarget": default_key,
         "defaultAgents": default_agents,
         "projects": projects,
-        "agents": AGENT_REGISTRY,
+        "agents": list_agents(),
         "vendorRoutes": setup_state.get("vendor_routes", {}),
     }
 
@@ -295,6 +288,8 @@ def save_setup(
     direct_keys: dict[str, str] | None = None,
     executor_id: str | None = None,
     reviewer_id: str | None = None,
+    custom_executor_cmd: str | None = None,
+    custom_reviewer_cmd: str | None = None,
 ) -> dict[str, Any]:
     if not os.path.isfile(ENV_PATH) and os.path.isfile(ENV_EXAMPLE_PATH):
         shutil.copy2(ENV_EXAMPLE_PATH, ENV_PATH)
@@ -327,12 +322,16 @@ def save_setup(
         if target_path:
             entry["path"] = get_project_root(target_path)
             entry["name"] = target_name or entry.get("name", key)
-        if executor_id or reviewer_id:
+        if executor_id or reviewer_id or custom_executor_cmd is not None or custom_reviewer_cmd is not None:
             entry.setdefault("agents", {})
             if executor_id:
                 entry["agents"]["executor"] = executor_id
             if reviewer_id:
                 entry["agents"]["reviewer"] = reviewer_id
+            if custom_executor_cmd is not None:
+                entry["agents"]["custom_executor_cmd"] = custom_executor_cmd
+            if custom_reviewer_cmd is not None:
+                entry["agents"]["custom_reviewer_cmd"] = custom_reviewer_cmd
         if not targets.get("default"):
             targets["default"] = key
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
@@ -538,7 +537,7 @@ def get_preflight(project_path: str | None = None) -> dict[str, Any]:
             issues.append("Reviewer agent not selected.")
         if path and health.get("valid"):
             workflow = get_workflow_root(path)
-            if not os.path.isfile(os.path.join(workflow, "scripts", "trigger_antigravity.py")):
+            if not os.path.isfile(os.path.join(workflow, "scripts", "trigger_executor.py")):
                 issues.append("Executor script not installed — run Scaffold or Install Agent Scripts.")
 
     return {
@@ -567,15 +566,36 @@ def pick_folder_macos() -> dict[str, Any]:
     return {"path": path}
 
 
-def install_adapters_stub(project_path: str, executor_id: str, reviewer_id: str) -> dict[str, Any]:
+def install_project_adapters(
+    project_path: str,
+    executor_id: str,
+    reviewer_id: str,
+    *,
+    custom_executor_cmd: str = "",
+    custom_reviewer_cmd: str = "",
+) -> dict[str, Any]:
     root = get_project_root(project_path)
-    workflow = get_workflow_root(root)
-    scaffold_project(root, patch_gitignore=True)
-    save_setup(target_path=root, executor_id=executor_id, reviewer_id=reviewer_id)
-    return {
-        "projectPath": root,
-        "workflowPath": workflow,
-        "executor": executor_id,
-        "reviewer": reviewer_id,
-        "message": "Workflow scripts installed from template.",
-    }
+    if not os.path.isdir(get_workflow_root(root)):
+        scaffold_project(root, patch_gitignore=True)
+
+    if executor_id == "custom" and not custom_executor_cmd.strip():
+        raise ValueError("Custom executor requires a command in Panel 0.")
+    if reviewer_id == "custom" and not custom_reviewer_cmd.strip():
+        raise ValueError("Custom reviewer requires a command in Panel 0.")
+
+    result = install_adapters(
+        root,
+        executor_id,
+        reviewer_id,
+        custom_executor_cmd=custom_executor_cmd,
+        custom_reviewer_cmd=custom_reviewer_cmd,
+    )
+    save_setup(
+        target_path=root,
+        executor_id=executor_id,
+        reviewer_id=reviewer_id,
+        custom_executor_cmd=custom_executor_cmd,
+        custom_reviewer_cmd=custom_reviewer_cmd,
+    )
+    result["health"] = assess_health(root)
+    return result
