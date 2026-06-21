@@ -156,7 +156,8 @@ async def _query_litellm(
     api_key = os.getenv("LITELLM_API_KEY", "").strip() or "sk-no-key"
     url = f"{base}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": model_id, "messages": messages, "temperature": temperature}
+    api_model = _api_model_name(model_id)
+    payload = {"model": api_model, "messages": messages, "temperature": temperature}
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
     if resp.status_code != 200:
