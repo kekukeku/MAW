@@ -685,7 +685,7 @@
     }
 
     async function pollForCouncil() {
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 600; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const res = await fetch(`${API}/api/maw/workflows/${activeWorkflowId}`);
         if (!res.ok) continue;
@@ -787,7 +787,7 @@
 
     async function pollWorkflow() {
       if (!activeTaskNum) return;
-      for (let i = 0; i < 120; i++) {
+      for (let i = 0; i < 3600; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const res = await fetch(`${API}/api/maw/workflow/${activeTaskNum}/status`);
         if (!res.ok) continue;
