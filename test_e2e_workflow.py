@@ -86,7 +86,7 @@ class TestE2EWorkflow(unittest.TestCase):
                 task_num = approved["task_num"]
                 self.assertEqual(task_num, "001")
 
-                task_file = os.path.join(self.target_path, "TASKS", f"task_{task_num}.md")
+                task_file = os.path.join(self.target_path, "MAW_workflow", "TASKS", f"task_{task_num}.md")
                 self.assertTrue(os.path.isfile(task_file))
 
                 final_state = None
@@ -116,7 +116,9 @@ class TestE2EWorkflow(unittest.TestCase):
                     WorkflowState.COMPLETED.value,
                     WorkflowState.FINAL_REPORT_PRESENTED.value,
                 ])
-                final_report_path = os.path.join(self.target_path, "PLANNING", f"final_report_{task_num}.md")
+                final_report_path = os.path.join(
+                    self.target_path, "MAW_workflow", "PLANNING", f"final_report_{task_num}.md"
+                )
                 self.assertTrue(os.path.isfile(final_report_path))
 
         asyncio.run(_run())

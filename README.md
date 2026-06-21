@@ -15,53 +15,53 @@ User Request → AI Council → Human Approval → Export → Executor → Revie
 - **Portable target projects**: Executor/reviewer scripts stay in the target repo; MAW only invokes them.
 - **Mock mode**: Test the full loop without spending API credits.
 
-## Quick Start
+## Quick Start (macOS)
 
-### 1. Install dependencies
+> **First-time permission fix**: If double-clicking `.command` files fails, run `chmod +x *.command` in Terminal, or use `install.command` which auto-fixes permissions.
 
-```bash
-uv sync
-```
-
-### 2. Configure environment
-
-Copy `.env.example` to `.env` and fill in your OpenRouter key:
+### 1. One-click install
 
 ```bash
-cp .env.example .env
+chmod +x install.command MAW.command   # only needed once after git clone
+./install.command
 ```
+
+This runs `uv sync`, creates `.env` from `.env.example`, and opens `http://127.0.0.1:8002`.
+
+### 2. Daily use
+
+Double-click **`MAW.command`** (or run `./MAW.command`) — Panel 0 opens every time for setup/status before launching a workflow.
+
+### 3. Configure environment
+
+`.env` is created on first install. Key variables:
 
 ```env
+LLM_PROVIDER=litellm
+LITELLM_API_BASE=http://localhost:4000
 OPENROUTER_API_KEY=sk-or-...
 TARGET_PROJECT_PATH=/path/to/your/target-project
 MAW_MOCK_MODE=0
-DEFAULT_COUNCIL_MODELS=openai/gpt-4o,anthropic/claude-3-5-sonnet,google/gemini-2.5-pro
-DEFAULT_CHAIRMAN_MODEL=openai/gpt-4o
 ALLOW_AUTO_COMMIT=false
-MAX_REVIEW_ITERATIONS=3
-EXECUTOR_TIMEOUT_SECONDS=600
-REVIEWER_TIMEOUT_SECONDS=300
 ```
 
-### 3. Configure a target project
+Mock mode is **server-only** (`MAW_MOCK_MODE=1`); it does not appear in the user UI.
 
-Create or use a target project that follows the MAW contract. A working mock example is provided in `template_target_project/`.
+### 4. Target project contract (`MAW_workflow/`)
 
-Target project structure:
+All MAW artifacts live under `<target-project>/MAW_workflow/`. Executor code changes happen in the project root; state files stay in `MAW_workflow/`.
 
 ```
 target-project/
-├── AGENT_STATE.md              # central task registry
-├── TASKS/                      # task markdown files
-├── PLANNING/                   # council records & final reports
-├── REVIEWS/                    # review reports
-├── scripts/
-│   └── trigger_antigravity.py  # start executor
-├── agent-runner/
-│   ├── trigger-review.js       # start reviewer
-│   └── route-review-decision.js # parse review decision
-└── .gitignore                  # must ignore MAW-generated files
+├── .gitignore                  # must include MAW_workflow/
+└── MAW_workflow/
+    ├── AGENT_STATE.md
+    ├── TASKS/  PLANNING/  REVIEWS/
+    ├── scripts/trigger_antigravity.py
+    └── agent-runner/trigger-review.js, route-review-decision.js
 ```
+
+Use **Panel 0 → Scaffold** to create this structure automatically. A working mock template is in `template_target_project/`.
 
 Add to `~/.agent-cowork/targets.json`:
 

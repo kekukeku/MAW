@@ -14,6 +14,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from export import export_to_target, load_targets, validate_target, slugify_title
+from maw_paths import get_workflow_root
 from council.council import run_council
 from council.storage import load_conversation, CONVERSATIONS_DIR
 
@@ -203,6 +204,18 @@ class LoopOrchestrator:
                 dead.append(ws)
         for ws in dead:
             self._ws_clients.get(task_num, set()).discard(ws)
+
+    def _project_path(self, wf: dict[str, Any]) -> str | None:
+        export = wf.get("export_result") or {}
+        return export.get("targetPath")
+
+    def _workflow_path(self, wf: dict[str, Any]) -> str | None:
+        export = wf.get("export_result") or {}
+        path = export.get("workflowPath")
+        if path:
+            return path
+        project = export.get("targetPath")
+        return get_workflow_root(project) if project else None
 
     def _public_workflow(self, wf: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -458,16 +471,20 @@ class LoopOrchestrator:
                 self._start_monitor(task_num)
 
     async def _spawn_executor(self, wf: dict[str, Any]) -> None:
-        target_path = wf["export_result"]["targetPath"]
+        project_path = self._project_path(wf)
+        workflow_path = self._workflow_path(wf)
         task_num = wf["task_num"]
-        script = os.path.join(target_path, "scripts", "trigger_antigravity.py")
+        if not project_path or not workflow_path:
+            self._set_state(wf, WorkflowState.FAILED, reason="Missing target or workflow path")
+            return
+        script = os.path.join(workflow_path, "scripts", "trigger_antigravity.py")
         if not os.path.isfile(script):
             self._set_state(wf, WorkflowState.FAILED, reason=f"Missing executor script: {script}")
             return
 
         self._set_state(wf, WorkflowState.EXECUTOR_RUNNING)
         cmd = ["python3", script, "--task-num", task_num, "--title", wf.get("title", f"Task {task_num}")]
-        await self._run_subprocess(wf, cmd, cwd=target_path, timeout=DEFAULT_EXECUTOR_TIMEOUT, label="executor")
+        await self._run_subprocess(wf, cmd, cwd=project_path, timeout=DEFAULT_EXECUTOR_TIMEOUT, label="executor")
         if wf.get("state") == WorkflowState.FAILED.value:
             return
         await self._handle_executor_complete(wf)
@@ -488,12 +505,12 @@ class LoopOrchestrator:
         if not wf:
             return
 
-        target_path = wf.get("export_result", {}).get("targetPath")
-        if not target_path:
+        workflow_path = self._workflow_path(wf)
+        if not workflow_path:
             return
 
-        agent_state_path = os.path.join(target_path, "AGENT_STATE.md")
-        reviews_dir = os.path.join(target_path, "REVIEWS")
+        agent_state_path = os.path.join(workflow_path, "AGENT_STATE.md")
+        reviews_dir = os.path.join(workflow_path, "REVIEWS")
         poll_interval = 2.0
         review_triggered = False
 
@@ -554,9 +571,9 @@ class LoopOrchestrator:
 
     async def _handle_executor_complete(self, wf: dict[str, Any]) -> None:
         """Transition after executor finishes based on review policy."""
-        target_path = wf["export_result"]["targetPath"]
+        workflow_path = self._workflow_path(wf)
         task_num = wf["task_num"]
-        agent_state_path = os.path.join(target_path, "AGENT_STATE.md")
+        agent_state_path = os.path.join(workflow_path, "AGENT_STATE.md")
         status = self._read_task_status(agent_state_path, task_num)
 
         if status != "UNDER_REVIEW":
@@ -577,19 +594,20 @@ class LoopOrchestrator:
             await self._spawn_reviewer(wf)
 
     async def _spawn_reviewer(self, wf: dict[str, Any]) -> None:
-        target_path = wf["export_result"]["targetPath"]
+        project_path = self._project_path(wf)
+        workflow_path = self._workflow_path(wf)
         task_num = wf["task_num"]
-        script = os.path.join(target_path, "agent-runner", "trigger-review.js")
+        script = os.path.join(workflow_path, "agent-runner", "trigger-review.js")
         if not os.path.isfile(script):
             self._set_state(wf, WorkflowState.FAILED, reason=f"Missing reviewer script: {script}")
             return
 
         self._set_state(wf, WorkflowState.REVIEW_RUNNING)
         cmd = ["node", script, task_num]
-        await self._run_subprocess(wf, cmd, cwd=target_path, timeout=DEFAULT_REVIEWER_TIMEOUT, label="reviewer")
+        await self._run_subprocess(wf, cmd, cwd=project_path, timeout=DEFAULT_REVIEWER_TIMEOUT, label="reviewer")
         if wf.get("state") == WorkflowState.FAILED.value:
             return
-        review_file = os.path.join(target_path, "REVIEWS", f"review_{task_num}.md")
+        review_file = os.path.join(workflow_path, "REVIEWS", f"review_{task_num}.md")
         if os.path.isfile(review_file):
             self._set_state(wf, WorkflowState.REVIEW_DECISION_PENDING)
             await self._route_review_decision(wf)
@@ -598,9 +616,9 @@ class LoopOrchestrator:
 
     async def _route_human_review(self, wf: dict[str, Any]) -> None:
         """Read decision from human-written review file metadata."""
-        target_path = wf["export_result"]["targetPath"]
+        workflow_path = self._workflow_path(wf)
         task_num = wf["task_num"]
-        review_file = os.path.join(target_path, "REVIEWS", f"review_{task_num}.md")
+        review_file = os.path.join(workflow_path, "REVIEWS", f"review_{task_num}.md")
         try:
             with open(review_file, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -618,16 +636,17 @@ class LoopOrchestrator:
         await self._apply_review_decision(wf, decision)
 
     async def _route_review_decision(self, wf: dict[str, Any]) -> None:
-        target_path = wf["export_result"]["targetPath"]
+        project_path = self._project_path(wf)
+        workflow_path = self._workflow_path(wf)
         task_num = wf["task_num"]
-        script = os.path.join(target_path, "agent-runner", "route-review-decision.js")
+        script = os.path.join(workflow_path, "agent-runner", "route-review-decision.js")
         if not os.path.isfile(script):
             self._set_state(wf, WorkflowState.FAILED, reason=f"Missing route script: {script}")
             return
 
         cmd = ["node", script, task_num]
         output = await self._run_subprocess(
-            wf, cmd, cwd=target_path, timeout=60, label="router", capture_only=True
+            wf, cmd, cwd=project_path, timeout=60, label="router", capture_only=True
         )
         decision = parse_review_decision(output)
         await self._apply_review_decision(wf, decision)
@@ -743,11 +762,11 @@ class LoopOrchestrator:
             return None
 
     def _update_agent_state_status(self, wf: dict[str, Any], new_status: str) -> None:
-        target_path = wf.get("export_result", {}).get("targetPath")
+        workflow_path = self._workflow_path(wf)
         task_num = wf.get("task_num")
-        if not target_path or not task_num:
+        if not workflow_path or not task_num:
             return
-        agent_state_path = os.path.join(target_path, "AGENT_STATE.md")
+        agent_state_path = os.path.join(workflow_path, "AGENT_STATE.md")
         if not os.path.isfile(agent_state_path):
             return
         try:
@@ -864,11 +883,11 @@ class LoopOrchestrator:
             return f"Final summary: {base[:500]}"
 
     def _write_final_report_file(self, wf: dict[str, Any], report: dict[str, Any]) -> None:
-        target_path = wf.get("export_result", {}).get("targetPath")
+        workflow_path = self._workflow_path(wf)
         task_num = wf.get("task_num")
-        if not target_path or not task_num:
+        if not workflow_path or not task_num:
             return
-        planning_dir = os.path.join(target_path, "PLANNING")
+        planning_dir = os.path.join(workflow_path, "PLANNING")
         os.makedirs(planning_dir, exist_ok=True)
         report_path = os.path.join(planning_dir, f"final_report_{task_num}.md")
         content = (

@@ -60,6 +60,7 @@ class TestOrchestrator(unittest.TestCase):
                 mock_export.return_value = {
                     "taskNum": "001",
                     "targetPath": os.path.join(self.test_dir, "target"),
+                    "workflowPath": os.path.join(self.test_dir, "target", "MAW_workflow"),
                     "targetKey": "test",
                 }
                 wf = await self.orch.start_council(
@@ -111,6 +112,7 @@ class TestOrchestrator(unittest.TestCase):
                 mock_export.return_value = {
                     "taskNum": "001",
                     "targetPath": os.path.join(self.test_dir, "target"),
+                    "workflowPath": os.path.join(self.test_dir, "target", "MAW_workflow"),
                     "targetKey": "test",
                 }
                 await self.orch.start_council(prompt="x", target_key="test", mock=True)

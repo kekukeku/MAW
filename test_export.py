@@ -9,6 +9,7 @@ import re
 
 # Import target functions to test
 from export import slugify_title, allocate_task_num, validate_target, acquire_export_lock, release_export_lock, append_registry_row_atomic
+from maw_paths import WORKFLOW_DIR_NAME
 
 class TestMAWExportAdapter(unittest.TestCase):
 
@@ -37,18 +38,21 @@ class TestMAWExportAdapter(unittest.TestCase):
 
     def _make_valid_target(self, base_dir):
         """Create a minimal MAW target project contract structure."""
+        workflow = os.path.join(base_dir, WORKFLOW_DIR_NAME)
         for d in ("TASKS", "PLANNING", "REVIEWS", "scripts", "agent-runner"):
-            os.makedirs(os.path.join(base_dir, d), exist_ok=True)
-        with open(os.path.join(base_dir, "AGENT_STATE.md"), "w") as f:
+            os.makedirs(os.path.join(workflow, d), exist_ok=True)
+        with open(os.path.join(workflow, "AGENT_STATE.md"), "w") as f:
             f.write("# Central Registry\n| Task ID | State | Linked PR |\n| :--- | :--- | :--- |\n")
-        with open(os.path.join(base_dir, "scripts", "trigger_antigravity.py"), "w") as f:
+        with open(os.path.join(workflow, "scripts", "trigger_antigravity.py"), "w") as f:
             f.write("# executor\n")
-        with open(os.path.join(base_dir, "agent-runner", "trigger-review.js"), "w") as f:
+        with open(os.path.join(workflow, "agent-runner", "trigger-review.js"), "w") as f:
             f.write("// reviewer\n")
-        with open(os.path.join(base_dir, "agent-runner", "route-review-decision.js"), "w") as f:
+        with open(os.path.join(workflow, "agent-runner", "route-review-decision.js"), "w") as f:
             f.write("// router\n")
-        with open(os.path.join(base_dir, ".gitignore"), "w") as f:
+        with open(os.path.join(workflow, ".gitignore"), "w") as f:
             f.write("AGENT_STATE.md\nTASKS/\nPLANNING/\nREVIEWS/\n*.tmp\n.maw_export.lock\n")
+        with open(os.path.join(base_dir, ".gitignore"), "w") as f:
+            f.write(f"{WORKFLOW_DIR_NAME}/\n")
 
     def test_validate_target(self):
         """Verify project path validation requirements."""
@@ -62,9 +66,10 @@ class TestMAWExportAdapter(unittest.TestCase):
         self.assertEqual(len(issues), 0)
 
     def test_validate_target_missing_tmp_gitignore(self):
-        """Reject targets missing *.tmp in .gitignore."""
+        """Reject targets missing *.tmp in workflow .gitignore."""
         self._make_valid_target(self.test_dir)
-        with open(os.path.join(self.test_dir, ".gitignore"), "w") as f:
+        workflow = os.path.join(self.test_dir, WORKFLOW_DIR_NAME)
+        with open(os.path.join(workflow, ".gitignore"), "w") as f:
             f.write("AGENT_STATE.md\nTASKS/\nPLANNING/\nREVIEWS/\n.maw_export.lock\n")
         valid, issues = validate_target(self.test_dir)
         self.assertFalse(valid)
@@ -93,7 +98,9 @@ class TestMAWExportAdapter(unittest.TestCase):
     def test_lock_mechanism(self):
         """Verify file lock liveness checking and timeout reclaiming."""
         # Lock missing -> acquire successful
-        acquired, err = acquire_export_lock(self.test_dir, "test")
+        workflow = os.path.join(self.test_dir, WORKFLOW_DIR_NAME)
+        os.makedirs(workflow, exist_ok=True)
+        acquired, err = acquire_export_lock(workflow, "test")
         self.assertTrue(acquired)
         self.assertIsNone(err)
         
@@ -103,13 +110,12 @@ class TestMAWExportAdapter(unittest.TestCase):
         # from the same active PID: wait, the lock checks:
         # "if not is_pid_alive(lock_pid): reclaim else if older than 5 min: reclaim else: return 409"
         # Since os.getpid() IS alive, it should return 409!
-        acquired, err = acquire_export_lock(self.test_dir, "test")
+        acquired, err = acquire_export_lock(workflow, "test")
         self.assertFalse(acquired)
         self.assertIn("locked by active process PID", err)
-        
-        # Release lock
-        release_export_lock(self.test_dir)
-        self.assertFalse(os.path.exists(os.path.join(self.test_dir, ".maw_export.lock")))
+
+        release_export_lock(workflow)
+        self.assertFalse(os.path.exists(os.path.join(workflow, ".maw_export.lock")))
 
     def test_append_registry_row_atomic(self):
         """Verify atomic insertion of task rows in central registry."""

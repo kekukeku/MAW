@@ -54,10 +54,81 @@
     .auto-badge.off { background: rgba(245,158,11,0.15); color: var(--warn); }
     .final-report { background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.25); border-radius: 12px; padding: 16px; margin-top: 16px; }
     .final-report h3 { color: var(--ok); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .topbar-actions { display: flex; gap: 8px; }
+    .mode-hidden { display: none !important; }
+    .health-lamp { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 12px; border-radius: 8px; background: rgba(0,0,0,0.25); margin: 8px 0; }
+    .health-red { color: var(--err); }
+    .health-yellow { color: var(--warn); }
+    .health-green { color: var(--ok); }
+    .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .setup-panel { grid-column: 1 / -1; }
+    @media (max-width: 900px) { .setup-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <div class="layout">
+  <header class="topbar">
+    <h1>MAW</h1>
+    <div class="topbar-actions">
+      <button class="btn btn-secondary" onclick="showSetupMode()">⚙ Settings</button>
+      <button class="btn btn-primary" id="btn-launch" onclick="launchWorkflow()" disabled title="Complete setup first">▶ Launch Workflow</button>
+    </div>
+  </header>
+
+  <div id="mode-setup" class="layout" style="grid-template-columns:1fr; grid-template-rows:auto 1fr;">
+    <div class="panel setup-panel" id="panel-setup">
+      <h2>Panel 0 — Setup &amp; Status</h2>
+      <div class="setup-grid">
+        <div>
+          <label>LLM Provider</label>
+          <select id="llm-provider">
+            <option value="litellm">★ LiteLLM Proxy (recommended)</option>
+            <option value="openrouter">OpenRouter (cloud)</option>
+            <option value="direct">Direct API (Phase 2)</option>
+          </select>
+          <label>LiteLLM Base URL</label>
+          <input id="litellm-base" value="http://localhost:4000">
+          <label>OpenRouter API Key</label>
+          <input id="openrouter-key" type="password" placeholder="sk-or-...">
+          <div class="actions">
+            <button class="btn btn-secondary" onclick="testLlm()">Test Connection</button>
+            <span id="llm-test-status" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+        </div>
+        <div>
+          <label>Target Project Path</label>
+          <input id="project-path" placeholder="/path/to/your/project">
+          <div class="actions">
+            <button class="btn btn-secondary" onclick="pickFolder()">Browse…</button>
+            <button class="btn btn-secondary" onclick="validateProject()">Validate</button>
+            <button class="btn btn-primary" onclick="scaffoldProject()">🔧 Scaffold</button>
+          </div>
+          <div id="health-lamp" class="health-lamp health-red">🔴 MAW_workflow not checked</div>
+          <ul id="health-issues" style="font-size:12px;color:var(--muted);margin-left:16px"></ul>
+        </div>
+        <div>
+          <label>Executor Agent</label>
+          <select id="executor-agent"></select>
+          <label>Reviewer Agent</label>
+          <select id="reviewer-agent"></select>
+        </div>
+        <div>
+          <label>Notes</label>
+          <p style="font-size:12px;color:var(--muted);line-height:1.5">
+            Contract files live in <code>MAW_workflow/</code> inside your target project.
+            Click Scaffold to create the structure, then Launch Workflow when the health lamp is green.
+          </p>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="saveSetup()">Save Settings</button>
+          </div>
+          <p id="setup-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="mode-workflow" class="layout mode-hidden">
     <!-- Panel 1: Council Creation -->
     <div class="panel" id="panel-create">
       <h2>Panel 1 — Council Creation</h2>
@@ -85,7 +156,6 @@
       <label title="When enabled, skips council approval gate (gate #1) automatically">
         <input type="checkbox" id="auto-approve-council"> Auto-approve council plan
       </label>
-      <label><input type="checkbox" id="mock-mode"> Use mock council (no API cost)</label>
       <div class="actions">
         <button class="btn btn-primary" onclick="startCouncil()">Start Council</button>
       </div>
@@ -130,7 +200,7 @@
       <h2>Panel 4 — Real-Time Logs</h2>
       <div id="terminal"></div>
     </div>
-  </div>
+  </div><!-- /mode-workflow -->
 
   <!-- Panel 5: Pre-Commit Report Modal -->
   <div class="modal" id="commit-modal">
@@ -147,7 +217,7 @@
 
   <script>
     const API = window.location.origin;
-    let config = {}, targets = [], activeConversationId = null, activeTaskNum = null;
+    let config = {}, targets = [], setupStatus = {}, activeConversationId = null, activeTaskNum = null;
     let activeWorkflowId = null, ws = null, lastLogCount = 0, currentWorkflow = null;
 
     const STATE_MAP = {
@@ -160,16 +230,142 @@
       COMPLETED: 'COMPLETED', FINAL_REPORT_PRESENTED: 'COMPLETED',
     };
 
-    async function init() {
-      const [cfgRes, tgtRes] = await Promise.all([
-        fetch(`${API}/api/maw/config`), fetch(`${API}/api/maw/targets`)
-      ]);
-      config = await cfgRes.json();
+    function showSetupMode() {
+      document.getElementById('mode-setup').classList.remove('mode-hidden');
+      document.getElementById('mode-workflow').classList.add('mode-hidden');
+    }
+
+    function showWorkflowMode() {
+      document.getElementById('mode-setup').classList.add('mode-hidden');
+      document.getElementById('mode-workflow').classList.remove('mode-hidden');
+    }
+
+    function renderHealth(health) {
+      const lamp = document.getElementById('health-lamp');
+      const issuesEl = document.getElementById('health-issues');
+      const icons = { red: '🔴', yellow: '🟡', green: '🟢' };
+      const cls = { red: 'health-red', yellow: 'health-yellow', green: 'health-green' };
+      const h = health || { lamp: 'red', label: 'Unknown', issues: [] };
+      lamp.className = `health-lamp ${cls[h.lamp] || 'health-red'}`;
+      lamp.textContent = `${icons[h.lamp] || '🔴'} ${h.label || 'Not ready'}`;
+      issuesEl.innerHTML = (h.issues || []).map(i => `<li>${i}</li>`).join('');
+      document.getElementById('btn-launch').disabled = h.lamp !== 'green';
+    }
+
+    function renderAgentSelects(agents) {
+      const exec = document.getElementById('executor-agent');
+      const rev = document.getElementById('reviewer-agent');
+      const opts = (agents || []).map(a => `<option value="${a.id}">${a.label}</option>`).join('');
+      exec.innerHTML = opts;
+      rev.innerHTML = opts;
+      rev.value = 'grok_build';
+    }
+
+    async function loadSetupStatus() {
+      const res = await fetch(`${API}/api/setup/status`);
+      setupStatus = await res.json();
+      document.getElementById('llm-provider').value = setupStatus.llmProvider || 'litellm';
+      document.getElementById('litellm-base').value = setupStatus.keys?.litellmBase || 'http://localhost:4000';
+      const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget) || setupStatus.projects?.[0];
+      if (project?.path) {
+        document.getElementById('project-path').value = project.path;
+        renderHealth(project.health);
+      }
+      renderAgentSelects(setupStatus.agents);
+    }
+
+    async function saveSetup() {
+      const body = {
+        targetPath: document.getElementById('project-path').value.trim(),
+        targetKey: 'default',
+        targetName: 'Default Target',
+        llmProvider: document.getElementById('llm-provider').value,
+        litellmBase: document.getElementById('litellm-base').value.trim(),
+        openrouterKey: document.getElementById('openrouter-key').value.trim() || undefined,
+      };
+      const res = await fetch(`${API}/api/setup/save`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+      });
+      setupStatus = await res.json();
+      document.getElementById('setup-status').textContent = 'Settings saved.';
+      await refreshTargets();
+      const project = setupStatus.projects?.find(p => p.key === setupStatus.defaultTarget);
+      if (project) renderHealth(project.health);
+    }
+
+    async function validateProject() {
+      const path = document.getElementById('project-path').value.trim();
+      if (!path) return;
+      const res = await fetch(`${API}/api/setup/validate`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ projectPath: path }),
+      });
+      const data = await res.json();
+      renderHealth(data.health);
+    }
+
+    async function scaffoldProject() {
+      const path = document.getElementById('project-path').value.trim();
+      if (!path) return alert('Enter a project path first');
+      const res = await fetch(`${API}/api/setup/scaffold`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ projectPath: path, patchGitignore: true }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || 'Scaffold failed');
+        return;
+      }
+      const data = await res.json();
+      renderHealth(data.health);
+      document.getElementById('setup-status').textContent = `Scaffolded ${data.workflowPath}`;
+      await refreshTargets();
+    }
+
+    async function testLlm() {
+      document.getElementById('llm-test-status').textContent = 'Testing...';
+      await saveSetup();
+      const res = await fetch(`${API}/api/setup/test-llm`, { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('llm-test-status').textContent = data.ok ? `✅ ${data.message}` : `❌ ${data.message}`;
+    }
+
+    async function pickFolder() {
+      const res = await fetch(`${API}/api/setup/pick-folder`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || 'Folder picker unavailable');
+        return;
+      }
+      const data = await res.json();
+      document.getElementById('project-path').value = data.path;
+      await validateProject();
+    }
+
+    async function launchWorkflow() {
+      const path = document.getElementById('project-path').value.trim();
+      const res = await fetch(`${API}/api/setup/preflight${path ? `?projectPath=${encodeURIComponent(path)}` : ''}`);
+      const data = await res.json();
+      if (!data.ready) {
+        renderHealth(data.health);
+        alert('Preflight failed:\n' + (data.issues || []).join('\n'));
+        return;
+      }
+      showWorkflowMode();
+    }
+
+    async function refreshTargets() {
+      const tgtRes = await fetch(`${API}/api/maw/targets`);
       const tgtData = await tgtRes.json();
       targets = tgtData.projects;
-      renderModels();
       renderTargets();
-      document.getElementById('mock-mode').checked = !!config.mockMode;
+    }
+
+    async function init() {
+      const [cfgRes] = await Promise.all([
+        fetch(`${API}/api/maw/config`), loadSetupStatus(), refreshTargets(),
+      ]);
+      config = await cfgRes.json();
+      renderModels();
       renderAutoCommitBadge();
       updateCostHint();
     }
@@ -208,23 +404,21 @@
 
     function updateCostHint() {
       const hint = document.getElementById('cost-hint');
-      const isMock = document.getElementById('mock-mode').checked;
+      const isMock = !!config.mockMode;
       const councilCount = selectedModels().length;
       if (isMock) {
         hint.className = 'cost-hint mock';
-        hint.textContent = `\u{1F9EA} Mock mode — no API calls (simulates ${councilCount} members + 1 chairman)`;
+        hint.textContent = `\u{1F9EA} Mock mode (MAW_MOCK_MODE) — no API calls (${councilCount} members + 1 chairman)`;
       } else {
         hint.className = 'cost-hint live';
-        hint.textContent = `\u{1F4B0} Live mode — will call ${councilCount} council members + 1 chairman via OpenRouter`;
+        hint.textContent = `\u{1F4B0} Live mode — will call ${councilCount} council members + 1 chairman`;
       }
       hint.style.display = 'block';
     }
 
-    // Update cost hint whenever models or mock toggle change
     document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
-        document.getElementById('mock-mode').addEventListener('change', updateCostHint);
-        document.getElementById('council-models').addEventListener('change', updateCostHint);
+        document.getElementById('council-models')?.addEventListener('change', updateCostHint);
       }, 100);
     });
 
@@ -244,7 +438,7 @@
           auto_approve_council: document.getElementById('auto-approve-council').checked,
         },
       };
-      if (document.getElementById('mock-mode').checked) body.mock = true;
+      if (config.mockMode) body.mock = true;
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

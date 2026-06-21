@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from export import load_targets, validate_target, export_to_target
+from maw_paths import get_workflow_root
+import setup_api
 from council.config import (
     DEFAULT_COUNCIL_MODELS,
     DEFAULT_CHAIRMAN_MODEL,
@@ -98,6 +100,30 @@ class HumanReviewRequest(BaseModel):
     decision: str
 
 
+class SetupValidateRequest(BaseModel):
+    projectPath: str
+
+
+class SetupScaffoldRequest(BaseModel):
+    projectPath: str
+    patchGitignore: bool = True
+
+
+class SetupSaveRequest(BaseModel):
+    targetPath: Optional[str] = None
+    targetKey: Optional[str] = None
+    targetName: Optional[str] = None
+    llmProvider: Optional[str] = None
+    openrouterKey: Optional[str] = None
+    litellmBase: Optional[str] = None
+
+
+class SetupInstallAdaptersRequest(BaseModel):
+    projectPath: str
+    executorId: str = "antigravity"
+    reviewerId: str = "grok_build"
+
+
 @app.get("/")
 async def serve_dashboard():
     static_html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
@@ -131,6 +157,7 @@ async def get_targets():
             "key": key,
             "name": info.get("name", key),
             "path": path,
+            "workflowPath": get_workflow_root(path) if path else "",
             "description": info.get("description", ""),
             "valid": valid,
             "issues": issues,
@@ -277,6 +304,79 @@ async def workflow_websocket(websocket: WebSocket, task_num: str):
         pass
     finally:
         await orchestrator.unregister_ws(task_num, websocket)
+
+
+@app.get("/api/setup/status")
+async def setup_status():
+    return setup_api.get_setup_status()
+
+
+@app.get("/api/setup/agents")
+async def setup_agents():
+    return {"agents": setup_api.AGENT_REGISTRY}
+
+
+@app.get("/api/setup/llm-models")
+async def setup_llm_models():
+    return setup_api.get_llm_models()
+
+
+@app.post("/api/setup/test-llm")
+async def setup_test_llm():
+    return await setup_api.test_llm_connection()
+
+
+@app.get("/api/setup/preflight")
+async def setup_preflight(projectPath: Optional[str] = None):
+    return setup_api.get_preflight(projectPath)
+
+
+@app.post("/api/setup/validate")
+async def setup_validate(req: SetupValidateRequest):
+    return setup_api.validate_project(req.projectPath)
+
+
+@app.post("/api/setup/scaffold")
+async def setup_scaffold(req: SetupScaffoldRequest):
+    try:
+        return setup_api.scaffold_project(req.projectPath, patch_gitignore=req.patchGitignore)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/setup/patch-gitignore")
+async def setup_patch_gitignore(req: SetupValidateRequest):
+    return setup_api.patch_project_gitignore(req.projectPath)
+
+
+@app.post("/api/setup/save")
+async def setup_save(req: SetupSaveRequest):
+    return setup_api.save_setup(
+        target_path=req.targetPath,
+        target_key=req.targetKey,
+        target_name=req.targetName,
+        llm_provider=req.llmProvider,
+        openrouter_key=req.openrouterKey,
+        litellm_base=req.litellmBase,
+    )
+
+
+@app.post("/api/setup/pick-folder")
+async def setup_pick_folder():
+    try:
+        return setup_api.pick_folder_macos()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/setup/install-adapters")
+async def setup_install_adapters(req: SetupInstallAdaptersRequest):
+    try:
+        return setup_api.install_adapters_stub(
+            req.projectPath, req.executorId, req.reviewerId
+        )
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/maw/export")

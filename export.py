@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timezone
 import shutil
 
+from maw_paths import WORKFLOW_DIR_NAME, get_project_root, get_workflow_root
+
 # Config registry path
 CONFIG_PATH = os.path.expanduser("~/.agent-cowork/targets.json")
 
@@ -55,9 +57,14 @@ def is_pid_alive(pid):
         return False
 
 def validate_target(target_path):
-    """Validate that the target path satisfies the MAW target project contract."""
-    if not os.path.isdir(target_path):
+    """Validate that the target project has a complete MAW_workflow contract."""
+    project_root = get_project_root(target_path)
+    if not os.path.isdir(project_root):
         return False, ["Target directory does not exist or is not a directory."]
+
+    workflow_root = get_workflow_root(project_root)
+    if not os.path.isdir(workflow_root):
+        return False, [f"Missing {WORKFLOW_DIR_NAME}/ directory."]
 
     issues = []
     required_files = [
@@ -70,24 +77,34 @@ def validate_target(target_path):
         ("agent-runner/route-review-decision.js", "file"),
     ]
     for rel_path, kind in required_files:
-        full = os.path.join(target_path, rel_path)
+        full = os.path.join(workflow_root, rel_path)
         if kind == "file" and not os.path.isfile(full):
-            issues.append(f"Missing {rel_path}.")
+            issues.append(f"Missing {WORKFLOW_DIR_NAME}/{rel_path}.")
         elif kind == "dir" and not os.path.isdir(full):
-            issues.append(f"Missing {rel_path}/ directory.")
+            issues.append(f"Missing {WORKFLOW_DIR_NAME}/{rel_path}/ directory.")
 
-    gitignore_path = os.path.join(target_path, ".gitignore")
-    if not os.path.isfile(gitignore_path):
-        issues.append("Missing .gitignore.")
-    else:
+    workflow_gitignore = os.path.join(workflow_root, ".gitignore")
+    if os.path.isfile(workflow_gitignore):
         try:
-            with open(gitignore_path, "r", encoding="utf-8") as f:
+            with open(workflow_gitignore, "r", encoding="utf-8") as f:
                 gi = f.read()
             for entry in ("AGENT_STATE.md", "TASKS/", "PLANNING/", "REVIEWS/", "*.tmp", ".maw_export.lock"):
                 if entry not in gi:
-                    issues.append(f".gitignore missing required entry: {entry}")
+                    issues.append(f"{WORKFLOW_DIR_NAME}/.gitignore missing required entry: {entry}")
         except Exception:
-            issues.append("Could not read .gitignore.")
+            issues.append(f"Could not read {WORKFLOW_DIR_NAME}/.gitignore.")
+
+    project_gitignore = os.path.join(project_root, ".gitignore")
+    if not os.path.isfile(project_gitignore):
+        issues.append("Missing project root .gitignore.")
+    else:
+        try:
+            with open(project_gitignore, "r", encoding="utf-8") as f:
+                gi = f.read()
+            if f"{WORKFLOW_DIR_NAME}/" not in gi:
+                issues.append(f"Project .gitignore missing required entry: {WORKFLOW_DIR_NAME}/")
+        except Exception:
+            issues.append("Could not read project root .gitignore.")
 
     return len(issues) == 0, issues
 
@@ -99,9 +116,9 @@ def get_conversations_dir():
     os.makedirs(local_dir, exist_ok=True)
     return local_dir
 
-def acquire_export_lock(target_path, target_key):
+def acquire_export_lock(workflow_path, target_key):
     """Acquire a lock to prevent concurrent write collisions."""
-    lock_file_path = os.path.join(target_path, ".maw_export.lock")
+    lock_file_path = os.path.join(workflow_path, ".maw_export.lock")
     pid = os.getpid()
     now_utc = datetime.now(timezone.utc).isoformat()
     
@@ -145,7 +162,7 @@ def acquire_export_lock(target_path, target_key):
             "pid": pid,
             "startedAt": now_utc,
             "target": target_key,
-            "targetPath": target_path
+            "targetPath": workflow_path
         }
         with open(lock_file_path, "w", encoding="utf-8") as f:
             json.dump(lock_info, f, indent=2)
@@ -153,9 +170,9 @@ def acquire_export_lock(target_path, target_key):
     except Exception as e:
         return False, f"Failed to write lock file: {e}"
 
-def release_export_lock(target_path):
+def release_export_lock(workflow_path):
     """Release the lock file."""
-    lock_file_path = os.path.join(target_path, ".maw_export.lock")
+    lock_file_path = os.path.join(workflow_path, ".maw_export.lock")
     if os.path.exists(lock_file_path):
         try:
             os.remove(lock_file_path)
@@ -403,16 +420,18 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         raise ValueError(f"Unknown target key: '{target_key}'. Please add it to targets.json.")
         
     target_info = projects[target_key]
-    target_path = target_info.get("path")
-    if not target_path:
+    project_root = get_project_root(target_info.get("path", ""))
+    if not project_root:
         raise ValueError(f"Target path not defined for project: '{target_key}'.")
-        
-    valid, issues = validate_target(target_path)
+
+    workflow_root = get_workflow_root(project_root)
+
+    valid, issues = validate_target(project_root)
     if not valid:
-        raise ValueError(f"Invalid target repo setup at '{target_path}': {', '.join(issues)}")
-        
+        raise ValueError(f"Invalid target repo setup at '{project_root}': {', '.join(issues)}")
+
     # 2. Acquire lock
-    lock_acquired, lock_err = acquire_export_lock(target_path, target_key)
+    lock_acquired, lock_err = acquire_export_lock(workflow_root, target_key)
     if not lock_acquired:
         # HTTP 409 Conflict
         raise PermissionError(lock_err)
@@ -420,13 +439,13 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
     task_tmp_path = council_json_tmp_path = council_md_tmp_path = None
     try:
         # 3. Resolve next Task number
-        agent_state_path = os.path.join(target_path, "AGENT_STATE.md")
+        agent_state_path = os.path.join(workflow_root, "AGENT_STATE.md")
         task_num = allocate_task_num(agent_state_path)
         task_id = f"TASK-{task_num}"
-        
+
         # Ensure paths are safe
-        tasks_dir = os.path.join(target_path, "TASKS")
-        planning_dir = os.path.join(target_path, "PLANNING")
+        tasks_dir = os.path.join(workflow_root, "TASKS")
+        planning_dir = os.path.join(workflow_root, "PLANNING")
         os.makedirs(tasks_dir, exist_ok=True)
         os.makedirs(planning_dir, exist_ok=True)
         
@@ -579,24 +598,23 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         os.replace(task_tmp_path, task_file_path)
         
         # 8. Check monitor state
-        monitor_active = is_monitor_running(target_path)
+        monitor_active = is_monitor_running(project_root)
         dispatch_status = "dispatched_via_monitor" if monitor_active else "exported_not_dispatched"
-        
-        # Formulate copy-paste manual dispatch command quoted for paths with spaces
-        # e.g., cd '/path' && python3 monitor.py --project-root '/path' --dispatch-test '{"target":...}'
-        escaped_path = target_path.replace("'", "'\\''")
+
+        escaped_path = project_root.replace("'", "'\\''")
         manual_cmd = (
             f"cd '{escaped_path}' && "
             f"python3 monitor.py --project-root '{escaped_path}' "
             f"--dispatch-test '{{\"target\":\"antigravity\",\"task_num\":\"{task_num}\",\"trigger\":\"task_status\",\"state\":\"IN_PROGRESS\"}}'"
         )
-        
+
         return {
             "taskId": task_id,
             "taskNum": task_num,
             "targetKey": target_key,
             "targetName": target_info.get("name"),
-            "targetPath": target_path,
+            "targetPath": project_root,
+            "workflowPath": workflow_root,
             "taskPath": task_file_path,
             "councilJsonPath": final_json_path,
             "councilMarkdownPath": final_md_path,
@@ -617,4 +635,4 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         
     finally:
         # 9. Release lock
-        release_export_lock(target_path)
+        release_export_lock(workflow_root)

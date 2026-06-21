@@ -1,7 +1,1 @@
-# MAW-generated local records (do not commit)
-AGENT_STATE.md
-TASKS/
-PLANNING/
-REVIEWS/
-*.tmp
-.maw_export.lock
+MAW_workflow/
