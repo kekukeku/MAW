@@ -1,6 +1,6 @@
 # MAW Context-Aware Council 大改造計劃
 
-> **版本**：0.2
+> **版本**：0.3
 > **狀態**：架構改造計劃（review 修訂版）
 > **目標階段**：Phase 6 - Context-Aware Council
 > **核心原則**：盡量不改變使用者感受到的 UI/UX 流程，但徹底修正 Council 盲眼決策問題。
@@ -9,7 +9,7 @@
 
 ## 0. Review 後定案
 
-經過小 A / 小 B / 小 O 對 v0.1 計劃的評估後，整體方向維持不變，但第一批實作範圍需要收斂。
+經過小 A / 小 B / 小 O 對 v0.1 計劃的評估，以及第二組 Openwork 模型對 v0.2 的實作微調後，整體方向維持不變，但第一批實作範圍需要收斂並補上幾個 Phase 6a 細節。
 
 本修訂版採用以下決策：
 
@@ -21,6 +21,7 @@
 6. **MVP 預算下修**：Phase 6a 先用 40K-50K chars 的總預算，避免三階段 Council 成本暴增。
 7. **避免新增強依賴**：Phase 6a 不依賴 `rg`、embedding database 或新 UI 套件；`.gitignore` 可用 `git check-ignore` 輔助，失敗時 fallback 到內建 denylist。
 8. **Context 要 task-scoped**：若要給 Executor / Reviewer 使用，不寫全域 `MAW_workflow/CONTEXT.json`，而是保存在 `PLANNING/council_NNN.json`，必要時再輸出 `PLANNING/context_NNN.json`。
+9. **Phase 6a 實作細節固定**：`git check-ignore` 必須批次化；mock council 仍產生真實 fixture context pack；`context_pack=None` 要標記為 unavailable；export 層必須同步寫入 council markdown/json；測試 fixture 必須動態建立，不掃真實 repo。
 
 一句話：
 
@@ -311,7 +312,7 @@ Phase 6a 只要求 `blueprint`、`summary`、`policy`、`accessIssues` 穩定存
 Phase 6a 必須確保三個階段都以 context-aware request 為基礎：
 
 - **Stage 1**：每個 council member 收到 context envelope + original user request。
-- **Stage 2**：ranking prompt 也要包含 context envelope 或等價 context summary，避免評委只根據 raw prompt 排名。
+- **Stage 2**：ranking prompt 也要包含 context-aware request。可以使用完整 envelope，也可以使用由同一份 `context_pack` 產生的 compact context digest；但不得退回 raw prompt only。
 - **Stage 3**：Chairman synthesis 要看到 context、Stage 1 回答與 Stage 2 排名，且明確要求「若只有 L0，不得編造未提供的具體檔案內容」。
 
 ---
@@ -687,6 +688,21 @@ async def run_council(
 ) -> dict[str, Any]:
 ```
 
+`context_pack=None` 的行為必須明確：
+
+- 為了向後相容，`run_council()` 可以允許 `None`，並走舊的 prompt-only 模式。
+- 但 conversation / assistant metadata 必須標記：
+
+```json
+{
+  "contextPackVersion": null,
+  "contextStatus": "unavailable"
+}
+```
+
+- 正常 orchestrator 流程不得傳 `None`；`LoopOrchestrator._run_council_task()` 必須先 `build_context_pack()`，成功後才呼叫 `run_council()`。
+- 這個相容模式只用於舊資料、直接單元測試或手動低階 API，不是 MAW UI 的正常路徑。
+
 conversation root 新增：
 
 ```json
@@ -818,7 +834,25 @@ credentials.json
 service-account*.json
 ```
 
-### 10.2 Path Safety
+### 10.2 `.gitignore` Handling
+
+Phase 6a 若目標專案是 git repo，應優先用 git 本身判斷 ignore 規則，避免手寫 `.gitignore` parser。
+
+要求：
+
+- 使用 `git check-ignore --stdin` 批次處理候選檔案，不能逐檔啟動 subprocess。
+- subprocess `cwd` 設為 target project root。
+- 傳入與回傳都使用 target-root-relative path。
+- 若 `git` 不存在、target 不是 git repo、或 `git check-ignore` 失敗，必須 fallback 到內建 denylist。
+- fallback 不應中斷 context gathering；但要在 `accessIssues` 或 logs 中留下 warning。
+
+範例：
+
+```bash
+printf "file1.py\nfile2.js\n" | git check-ignore --stdin
+```
+
+### 10.3 Path Safety
 
 所有檔案讀取必須：
 
@@ -828,7 +862,7 @@ service-account*.json
 - 拒絕 `..` 跳出。
 - 對 symlink 做 root containment 檢查。
 
-### 10.3 Read-only Guarantee
+### 10.4 Read-only Guarantee
 
 Context gathering 階段不得：
 
@@ -901,15 +935,19 @@ Phase 6c+:
   - dependency files
 - 在 `LoopOrchestrator._run_council_task()` 先產生 context pack。
 - `run_council()` 接收 context pack。
+- `run_council(context_pack=None)` 僅作向後相容，metadata 要標記 `contextStatus: unavailable`。
 - Stage 1/2/3 prompt 使用 context envelope。
 - conversation JSON 保存 context pack。
-- `PLANNING/council_NNN.md` 與 `PLANNING/council_NNN.json` 輸出 context summary / context pack。
+- `export.py` 修改 `render_council_markdown()`，新增 Target Project Context 摘要區塊。
+- `export.py` 修改 `export_to_target()` 的 `council_json`，寫入完整或可重建的 `context_pack`。
+- `PLANNING/council_NNN.md` 與 `PLANNING/council_NNN.json` 都必須輸出 context summary / context pack。
 - auto-approve context guard 第一版同步加入。
 - 測試確保 mock/live prompt path 不再是 prompt-only。
 
 驗收：
 
 - Mock council conversation JSON 含 `context_pack`。
+- Mock council 測試仍應對 temporary target fixture 產生真實 context pack；mock 回答本身不需要引用具體檔案。
 - Live council Stage 1 prompt 不再只有 user prompt。
 - Stage 2 ranking prompt 不再只有 raw prompt。
 - Stage 3 synthesis prompt 明確知道 context boundary。
@@ -1034,6 +1072,24 @@ Phase 6a 新增測試：
 - produces stable context schema
 - uses a temporary target fixture, not the developer's real projects
 
+`test_project_context.py` 建議動態建立 fixture：
+
+```text
+/tmp/test_target_XXXX/
+├── .git/                 # 可用 git init 建立，或只測 fallback 時省略
+├── .gitignore            # contains MAW_workflow/ and node_modules/
+├── README.md             # meaningful project description
+├── package.json
+├── pyproject.toml
+├── src/
+│   └── main.py
+├── node_modules/         # must be excluded
+├── MAW_workflow/         # must be excluded
+└── .env                  # must be excluded as secret
+```
+
+測試不應掃描 MAW 本身或任何真實使用者專案。`template_target_project` 可作參考，但 Phase 6a 測試最好在 test case 內動態建立最小 fixture，避免 fixture drift。
+
 Phase 6d+ 才新增：
 
 - `test_context_budget.py`
@@ -1050,6 +1106,7 @@ Phase 6d+ 才新增：
 覆蓋：
 
 - mock council conversation includes context pack。
+- mock council uses a real context pack generated from a temporary target fixture, while mock response text remains deterministic and generic。
 - `_run_council_live()` prompt contains Target Project Context。
 - Stage 2 prompt includes original context-aware request, not raw prompt only。
 - Stage 3 synthesis includes context-aware deliberation。
@@ -1096,6 +1153,8 @@ Phase 6b+ 手動或 Playwright：
 | 全域 CONTEXT.json 覆蓋 | 多任務 context 混淆 | 使用 task-scoped `PLANNING/council_NNN.json` / `context_NNN.json` |
 | Stage 2 半盲 | 排名仍基於 raw prompt | Stage 2 prompt 必須包含 context-aware request |
 | 新公開狀態造成 resume bug | 重啟恢復變複雜 | Phase 6a 不新增公開 `CONTEXT_GATHERING` |
+| `.gitignore` 判斷太慢 | 大 repo 掃描延遲 | 使用 `git check-ignore --stdin` 批次化，失敗再 fallback |
+| 直接呼叫 `run_council()` 仍盲眼 | 舊 API 或測試路徑不可審計 | 允許 `context_pack=None`，但 metadata 標記 `contextStatus: unavailable` |
 
 ---
 
@@ -1109,7 +1168,10 @@ Phase 6b+ 手動或 Playwright：
 4. conversation JSON 保存 context pack。
 5. `PLANNING/council_NNN.md/json` 輸出 context summary / context pack。
 6. auto-approve context guard。
-7. 測試確保不再 blind council。
+7. `git check-ignore --stdin` 批次 ignore handling + denylist fallback。
+8. `context_pack=None` 向後相容標記。
+9. temporary target fixture 測試，確保不掃真實 repo。
+10. 測試確保不再 blind council。
 
 這一批不改 UI，使用者體感幾乎完全相同，但 Council 已經不再是純 prompt-only。
 
