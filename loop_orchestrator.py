@@ -298,11 +298,11 @@ class LoopOrchestrator:
             self._workflows[conversation["id"]] = wf
             self._persist()
 
-            # Auto-approve council if enabled in review policy AND server allows
+            # Auto-approve council if enabled in review policy (gate #1)
             policy = wf.get("review_policy", {})
-            if policy.get("auto_approve_council") and ALLOW_AUTO_COMMIT:
+            if policy.get("auto_approve_council"):
                 logger.info("Auto-approving council for %s", conversation["id"])
-                self._append_log(wf, "system", "Auto-approving council (advanced mode)")
+                self._append_log(wf, "system", "Auto-approving council (skips gate #1)")
                 try:
                     await self.approve_council(
                         conversation_id=conversation["id"],
@@ -641,19 +641,16 @@ class LoopOrchestrator:
         if decision == "APPROVE":
             wf["pre_commit_report"] = self._build_pre_commit_report(wf, decision)
             require_gate = policy.get("require_pre_commit_approval", True)
-            if require_gate and not ALLOW_AUTO_COMMIT:
+            if require_gate or not ALLOW_AUTO_COMMIT:
+                if not require_gate and not ALLOW_AUTO_COMMIT:
+                    self._append_log(
+                        wf,
+                        "system",
+                        "Auto-commit blocked: set ALLOW_AUTO_COMMIT=true to bypass gate #2",
+                    )
                 self._set_state(wf, WorkflowState.COMMIT_PENDING_APPROVAL)
-            elif not require_gate and ALLOW_AUTO_COMMIT:
-                await self.approve_commit(task_num)
-            elif not require_gate and not ALLOW_AUTO_COMMIT:
-                self._set_state(wf, WorkflowState.COMMIT_PENDING_APPROVAL)
-                self._append_log(
-                    wf,
-                    "system",
-                    "Auto-commit blocked: set ALLOW_AUTO_COMMIT=true to bypass gate #2",
-                )
             else:
-                self._set_state(wf, WorkflowState.COMMIT_PENDING_APPROVAL)
+                await self.approve_commit(task_num)
         elif decision == "REQUEST_CHANGES":
             if allow_loop and wf.get("review_iterations", 0) < max_iter:
                 wf["review_iterations"] = wf.get("review_iterations", 0) + 1

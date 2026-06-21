@@ -78,10 +78,12 @@
       <label>Max AI Review Iterations (0-5)</label>
       <input type="number" id="max-iterations" min="0" max="5" value="3">
       <label><input type="checkbox" id="allow-changes" checked> Allow REQUEST_CHANGES loop</label>
-      <label><input type="checkbox" id="require-commit" checked> Require pre-commit approval</label>
-      <label title="When enabled AND ALLOW_AUTO_COMMIT=true on server, skips council approval gate">
+      <label title="Unchecking skips gate #2 only when ALLOW_AUTO_COMMIT=true on server">
+        <input type="checkbox" id="require-commit" checked> Require pre-commit approval
+        <span id="auto-commit-badge" class="auto-badge off">server off</span>
+      </label>
+      <label title="When enabled, skips council approval gate (gate #1) automatically">
         <input type="checkbox" id="auto-approve-council"> Auto-approve council plan
-        <span id="auto-commit-badge" class="auto-badge off">⚠ server off</span>
       </label>
       <label><input type="checkbox" id="mock-mode"> Use mock council (no API cost)</label>
       <div class="actions">
@@ -174,16 +176,12 @@
 
     function renderAutoCommitBadge() {
       const badge = document.getElementById('auto-commit-badge');
-      const cb = document.getElementById('auto-approve-council');
       if (config.allowAutoCommit) {
         badge.className = 'auto-badge on';
         badge.textContent = '\u2714 server on';
-        cb.disabled = false;
       } else {
         badge.className = 'auto-badge off';
         badge.textContent = '\u26a0 server off';
-        cb.disabled = true;
-        cb.checked = false;
       }
     }
 
