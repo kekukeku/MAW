@@ -279,7 +279,10 @@
         </label>
       </div>
 
-      <label>圓桌名單（2-4位騎士效果最佳）</label>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin: 8px 0 4px;">
+        <label style="margin: 0;">圓桌名單（2-4位騎士效果最佳）</label>
+        <button class="btn btn-secondary" style="font-size: 10px; padding: 2px 8px; border-radius: 4px; height: auto;" onclick="clearAllModels()">取消所有勾選</button>
+      </div>
       <div class="model-grid" id="council-models"></div>
 
       <div class="actions">
@@ -624,6 +627,11 @@
 
     function selectedModels() {
       return [...document.querySelectorAll('#council-models input:checked')].map(c => c.value);
+    }
+
+    function clearAllModels() {
+      document.querySelectorAll('#council-models input[type="checkbox"]').forEach(cb => cb.checked = false);
+      updateCostHint();
     }
 
     function updateCostHint() {
