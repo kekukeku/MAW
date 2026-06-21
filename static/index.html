@@ -47,8 +47,10 @@
     .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); }
     .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.12); border-color: var(--accent); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 120px; overflow: auto; }
-    .model-grid label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+    .model-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; max-height: 120px; overflow: auto; margin-bottom: 12px; }
+    .model-grid label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .checkbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); font-weight: 500; cursor: pointer; margin: 4px 0; letter-spacing: normal; user-select: none; }
+    input[type="checkbox"] { width: auto !important; height: auto !important; padding: 0 !important; margin: 0 !important; background: transparent !important; border: none !important; -webkit-appearance: checkbox !important; appearance: checkbox !important; accent-color: var(--accent); cursor: pointer; }
     .pipeline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; }
     .node { padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border); font-size: 12px; color: var(--muted); transition: all 0.3s; font-weight: 500; }
     .node.active { background: rgba(212,175,55,0.15); border-color: var(--accent); color: #fff; animation: pulse 1.5s infinite; }
@@ -233,7 +235,7 @@
     <!-- Panel 1: Council Creation -->
     <div class="panel" id="panel-create" style="grid-row: 2 / span 2; grid-column: 1;">
       <h2>發起圓桌會議</h2>
-      <label>開發任務需求描述</label>
+      <label>任務需求</label>
       <textarea id="prompt" placeholder="騎士集結，聆聽陛下指示！"></textarea>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
@@ -247,9 +249,6 @@
         </div>
       </div>
 
-      <label>圓桌武士名單（多選）</label>
-      <div class="model-grid" id="council-models"></div>
-
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
         <div>
           <label>審判模式</label>
@@ -260,19 +259,29 @@
           </select>
         </div>
         <div>
-          <label>AI 自動審查迴圈上限 (0-5 次)</label>
+          <label>審判次數上限(1審-5審)</label>
           <input type="number" id="max-iterations" min="0" max="5" value="3">
         </div>
       </div>
 
-      <label><input type="checkbox" id="allow-changes" checked> 允許自動退件修復迴圈 (Request Changes)</label>
-      <label title="取消核取時，只有在伺服器環境變數 ALLOW_AUTO_COMMIT=true 時才會跳過審批">
-        <input type="checkbox" id="require-commit" checked> 程式碼提交與合併前需人工審批二次確認 (Gate #2)
-        <span id="auto-commit-badge" class="auto-badge off">server off</span>
-      </label>
-      <label title="啟用時，自動跳過會議決議審查關卡 (Gate #1)">
-        <input type="checkbox" id="auto-approve-council"> 自動批准董事會決議 (Auto-approve)
-      </label>
+      <div style="display: flex; gap: 16px; align-items: center; margin-top: 8px; margin-bottom: 4px; flex-wrap: wrap;">
+        <label class="checkbox-label">
+          <input type="checkbox" id="allow-changes" checked> 允許自動退件修復迴圈 (Request Changes)
+        </label>
+        <label class="checkbox-label" title="啟用時，自動跳過會議決議審查關卡 (Gate #1)">
+          <input type="checkbox" id="auto-approve-council"> 自動批准圓桌決議 (Auto-approve)
+        </label>
+      </div>
+      <div style="margin-bottom: 12px;">
+        <label class="checkbox-label" title="取消核取時，只有在伺服器環境變數 ALLOW_AUTO_COMMIT=true 時才會跳過審批">
+          <input type="checkbox" id="require-commit" checked> 程式碼提交與合併前需人工審批二次確認 (Gate #2)
+          <span id="auto-commit-badge" class="auto-badge off">server off</span>
+        </label>
+      </div>
+
+      <label>圓桌武士名單（多選）</label>
+      <div class="model-grid" id="council-models"></div>
+
       <div class="actions">
         <button class="btn btn-primary" onclick="startCouncil()">開始開會</button>
       </div>
@@ -639,7 +648,7 @@
 
     async function startCouncil() {
       const prompt = document.getElementById('prompt').value.trim();
-      if (!prompt) return alert('請填寫任務需求描述');
+      if (!prompt) return alert('請填寫任務需求');
       const models = selectedModels();
       if (!models.length) return alert('請至少勾選一個可用的會議模型成員');
       document.getElementById('create-status').textContent = '圓桌會議進行中，正在收集各模型回答...';
