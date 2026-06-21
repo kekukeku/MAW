@@ -681,6 +681,7 @@
       }
       const started = await res.json();
       activeWorkflowId = started.workflow_id;
+      connectWebSocket(activeWorkflowId);
       pollForCouncil();
     }
 
@@ -761,9 +762,28 @@
       if (mawWs) return;
       mawWs = new MawWebSocket({
         onMessage: (data) => {
-          if (activeTaskNum && data.task_num && data.task_num !== activeTaskNum) return;
+          const currentId = activeTaskNum || activeWorkflowId;
+          const msgId = data.task_num || data.workflow_id;
+          if (currentId && msgId && msgId !== currentId) return;
+
           if (data.type === 'log' && data.entry) appendLog(data.entry);
-          if (data.workflow) updateFromWorkflow(data.workflow);
+          if (data.workflow) {
+            const wf = data.workflow;
+            if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
+              activeConversationId = wf.conversation_id;
+              document.getElementById('create-status').textContent = '會議完成 — 請於控制台 2 審查結果';
+              loadCouncilResults();
+            } else if (wf.state === 'FAILED') {
+              document.getElementById('create-status').textContent = '會議失敗: ' + (wf.reason || '');
+            } else if (wf.task_num && !activeTaskNum) {
+              activeTaskNum = wf.task_num;
+              document.getElementById('task-num').textContent = activeTaskNum;
+              lastLogCount = 0;
+              document.getElementById('terminal').textContent = '';
+              mawWs.subscribe(activeTaskNum);
+            }
+            updateFromWorkflow(wf);
+          }
         },
       });
       window.addEventListener('beforeunload', () => mawWs.close());

@@ -174,12 +174,12 @@ class LoopOrchestrator:
         self._schedule_broadcast(wf, log_entry=entry)
 
     def _schedule_broadcast(self, wf: dict[str, Any], log_entry: dict | None = None) -> None:
-        task_num = wf.get("task_num")
-        if not task_num:
+        target_id = wf.get("task_num") or wf.get("workflow_id")
+        if not target_id:
             return
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._broadcast(task_num, wf, log_entry))
+            loop.create_task(self._broadcast(target_id, wf, log_entry))
         except RuntimeError:
             pass
 
@@ -196,47 +196,52 @@ class LoopOrchestrator:
     async def unregister_global_ws(self, websocket: Any) -> None:
         self._global_ws_subscriptions.pop(websocket, None)
 
-    async def subscribe_global_ws(self, websocket: Any, task_num: str) -> None:
-        self._global_ws_subscriptions[websocket] = task_num
-        wf = self.get_workflow_by_task(task_num)
+    async def subscribe_global_ws(self, websocket: Any, subscription_id: str) -> None:
+        self._global_ws_subscriptions[websocket] = subscription_id
+        wf = self.get_workflow_by_task(subscription_id)
+        if not wf:
+            wf = self.get_workflow_by_id(subscription_id)
         if wf:
             await websocket.send_json({
                 "type": "status",
-                "task_num": task_num,
+                "task_num": wf.get("task_num"),
+                "workflow_id": wf.get("workflow_id"),
                 "workflow": self._public_workflow(wf),
             })
 
-    async def _broadcast(self, task_num: str, wf: dict[str, Any], log_entry: dict | None = None) -> None:
+    async def _broadcast(self, target_id: str, wf: dict[str, Any], log_entry: dict | None = None) -> None:
         public_wf = self._public_workflow(wf)
         task_payload: dict[str, Any] = {"type": "status", "workflow": public_wf}
         if log_entry:
             task_payload = {"type": "log", "entry": log_entry, "workflow": public_wf}
 
         dead_task: list[Any] = []
-        for ws in list(self._ws_clients.get(task_num, set())):
+        for ws in list(self._ws_clients.get(target_id, set())):
             try:
                 await ws.send_json(task_payload)
             except Exception:
                 dead_task.append(ws)
         for ws in dead_task:
-            self._ws_clients.get(task_num, set()).discard(ws)
+            self._ws_clients.get(target_id, set()).discard(ws)
 
         global_payload: dict[str, Any] = {
             "type": "status",
-            "task_num": task_num,
+            "task_num": wf.get("task_num"),
+            "workflow_id": wf.get("workflow_id"),
             "workflow": public_wf,
         }
         if log_entry:
             global_payload = {
                 "type": "log",
-                "task_num": task_num,
+                "task_num": wf.get("task_num"),
+                "workflow_id": wf.get("workflow_id"),
                 "entry": log_entry,
                 "workflow": public_wf,
             }
 
         dead_global: list[Any] = []
         for ws, subscribed in list(self._global_ws_subscriptions.items()):
-            if subscribed != task_num:
+            if subscribed != target_id:
                 continue
             try:
                 await ws.send_json(global_payload)
