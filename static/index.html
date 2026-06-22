@@ -285,6 +285,13 @@
         </label>
         <span id="auto-include-hint" style="font-size:10px;color:var(--warn);margin-left:4px;display:none;">請先點擊預覽以產生背景分析</span>
       </div>
+      <div style="margin-top:4px;">
+        <label class="checkbox-label" title="啟用 Explorer 唯讀調研層，在 Council 開會前提供專案區域摘要">
+          <input type="checkbox" id="generate-explorer" onchange="saveExplorerPref()"> 產生 Explorer 調研簡報 (唯讀研究層)
+        </label>
+        <button class="btn btn-secondary" style="font-size:10px;padding:2px 8px;border-radius:4px;margin-left:8px;" onclick="previewExplorer()">▶ 預覽 Explorer</button>
+        <span id="explorer-status" style="font-size:10px;color:var(--muted);margin-left:4px;"></span>
+      </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
         <div>
@@ -730,6 +737,9 @@
         aiCb.checked = loadAutoIncludePref();
         onAutoIncludeToggle();
       }
+      // Restore explorer preference.
+      const exCb = document.getElementById('generate-explorer');
+      if (exCb) exCb.checked = loadExplorerPref();
       const targetSel = document.getElementById('target-key');
       if (targetSel) {
         targetSel.addEventListener('change', () => {
@@ -774,6 +784,8 @@
         maxAutoScoutFiles: 3,
         minScoutScore: 40,
         scoutPreviewKey: lastPreviewKey.targetKey ? { targetKey: lastPreviewKey.targetKey, prompt: lastPreviewKey.prompt } : undefined,
+        generateExplorerBrief: document.getElementById('generate-explorer')?.checked || false,
+        explorerPreviewKey: lastPreviewKey.targetKey ? { targetKey: lastPreviewKey.targetKey, prompt: lastPreviewKey.prompt } : undefined,
       };
       if (config.mockMode) body.mock = true;
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -1229,6 +1241,47 @@
         return false;
       }
       return true;
+    }
+
+    // --- Explorer toggle ---
+    let lastExplorerBrief = null;
+
+    function loadExplorerPref() {
+      try { return localStorage.getItem('maw_generate_explorer') === 'true'; } catch (e) { return false; }
+    }
+
+    function saveExplorerPref() {
+      const cb = document.getElementById('generate-explorer');
+      try { localStorage.setItem('maw_generate_explorer', String(cb?.checked || false)); } catch (e) {}
+    }
+
+    async function previewExplorer() {
+      const status = document.getElementById('explorer-status');
+      status.textContent = '掃描中...';
+      status.style.color = 'var(--accent)';
+      const targetKey = document.getElementById('target-key')?.value || '';
+      const prompt = document.getElementById('prompt')?.value || '';
+      try {
+        const res = await fetch(`${API}/api/maw/context/explorer/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetKey, prompt, timeoutSeconds: 10 }),
+        });
+        if (!res.ok) {
+          status.textContent = 'Explorer 失敗';
+          status.style.color = 'var(--err)';
+          return;
+        }
+        const brief = await res.json();
+        lastExplorerBrief = brief;
+        const st = brief.status || 'unknown';
+        const files = brief.limits?.filesRead || 0;
+        status.textContent = `狀態: ${st} · ${files} 個候選檔案`;
+        status.style.color = st === 'ready' ? 'var(--ok)' : 'var(--warn)';
+      } catch (e) {
+        status.textContent = '網路錯誤';
+        status.style.color = 'var(--err)';
+      }
     }
 
     function renderContextPreviewContent(pack) {

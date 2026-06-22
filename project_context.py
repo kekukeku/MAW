@@ -885,6 +885,33 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
             ])
         l1_str = "\n".join(l1_parts)
 
+    # ---- P2.5: Explorer Research Brief (L3) ----
+    explorer_str = ""
+    explorer_brief = context_pack.get("explorerBrief")
+    if explorer_brief:
+        exp_lines = [
+            "## Explorer Research Brief (L3 — NOT source of truth)",
+            "- This section is an automated read-only research summary.",
+            "- Prefer User-Selected and Scout Auto-Selected file contents over this brief.",
+            "- Files listed with contentIncluded=false were NOT fully read.",
+            "",
+        ]
+        summary = explorer_brief.get("summary", "")
+        if summary:
+            exp_lines.extend(["### Summary", summary, ""])
+        candidate_files = explorer_brief.get("candidateFiles", [])
+        if candidate_files:
+            exp_lines.append("### Candidate Files Metadata")
+            for cf in candidate_files:
+                path = cf.get("path", "")
+                excerpt = cf.get("excerpt", "")
+                truncated = " (truncated)" if cf.get("truncated") else ""
+                exp_lines.append(f"- {path}{truncated}:")
+                if excerpt:
+                    exp_lines.append(f"  - Excerpt: `{excerpt[:200]}`")
+            exp_lines.append("")
+        explorer_str = "\n".join(exp_lines)
+
     # ---- P4: Context Boundaries + User Request (always last) ----
     boundary_str = "\n".join([
         "## Context Boundaries",
@@ -900,7 +927,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
     ])
 
     # Compute remaining budget for L0 blueprint.
-    fixed_chars = len(status_str) + len(l1_str) + len(boundary_str)
+    fixed_chars = len(status_str) + len(l1_str) + len(explorer_str) + len(boundary_str)
     remaining = max(0, max_total - fixed_chars)
     truncated_parts: list[str] = []
 
@@ -983,7 +1010,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
                 truncated_parts.append(f"dependency_omitted_no_budget:{path}")
 
     # Assemble in priority order.
-    result = status_str + "\n" + l1_str + "\n" + "\n".join(bp_parts) + "\n" + boundary_str
+    result = status_str + "\n" + l1_str + "\n" + explorer_str + "\n" + "\n".join(bp_parts) + "\n" + boundary_str
 
     # Record truncation markers in accessIssues for provenance.
     if truncated_parts:

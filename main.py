@@ -28,6 +28,7 @@ from project_context import (
     list_safe_files,
 )
 from scout import scout_suggestions
+from explorer import run_explorer_brief
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -112,6 +113,18 @@ class NewConversationRequest(BaseModel):
     maxAutoScoutFiles: int = 3
     minScoutScore: int = 40
     scoutPreviewKey: Optional[ScoutPreviewKey] = None
+    generateExplorerBrief: bool = False
+    explorerPreviewKey: Optional[ScoutPreviewKey] = None
+
+
+class ExplorerPreviewRequest(BaseModel):
+    targetKey: str
+    prompt: str
+    contextFiles: Optional[List[str]] = None
+    maxFilesRead: int = 8
+    maxCharsRead: int = 24000
+    timeoutSeconds: int = 15
+    allowLlmSummary: bool = False
 
 
 class ContextPreviewRequest(BaseModel):
@@ -278,6 +291,8 @@ async def create_conversation(req: NewConversationRequest):
             max_auto_scout=req.maxAutoScoutFiles,
             min_scout_score=req.minScoutScore,
             scout_preview_key=req.scoutPreviewKey.model_dump() if req.scoutPreviewKey else None,
+            generate_explorer=req.generateExplorerBrief,
+            explorer_preview_key=req.explorerPreviewKey.model_dump() if req.explorerPreviewKey else None,
         )
         return workflow
     except ValueError as e:
@@ -353,6 +368,32 @@ def _compute_would_auto_include(
             "source": "scout_auto_selected",
         })
     return result
+
+
+@app.post("/api/maw/context/explorer/preview")
+async def preview_explorer(req: ExplorerPreviewRequest):
+    """Run the Explorer research layer and return an ExplorerBrief.
+
+    Explorer is a read-only research layer that searches relevant directories
+    and produces a brief summary of the project area around the user's task.
+
+    Safety: read-only, target-root-confined, timeout-guarded.
+    """
+    try:
+        brief = run_explorer_brief(
+            target_key=req.targetKey,
+            prompt=req.prompt,
+            max_files_read=req.maxFilesRead,
+            max_chars_read=req.maxCharsRead,
+            timeout_seconds=req.timeoutSeconds,
+            allow_llm_summary=req.allowLlmSummary,
+        )
+        return brief
+    except ContextTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Explorer preview failed for target %s", req.targetKey)
+        raise HTTPException(status_code=500, detail=f"Explorer failed: {e}")
 
 
 @app.get("/api/maw/targets/{targetKey}/files")

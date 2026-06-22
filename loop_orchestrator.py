@@ -296,6 +296,8 @@ class LoopOrchestrator:
         max_auto_scout: int = 3,
         min_scout_score: int = 40,
         scout_preview_key: dict[str, str] | None = None,
+        generate_explorer: bool = False,
+        explorer_preview_key: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create workflow and run council asynchronously."""
         targets = load_targets()
@@ -331,6 +333,8 @@ class LoopOrchestrator:
                 "max_auto_scout": max_auto_scout,
                 "min_scout_score": min_scout_score,
                 "scout_preview_key": scout_preview_key,
+                "generate_explorer": generate_explorer,
+                "explorer_preview_key": explorer_preview_key,
                 "review_iterations": 0,
                 "logs": [],
                 "reason": None,
@@ -431,6 +435,41 @@ class LoopOrchestrator:
             )
             for issue in context_pack.get("accessIssues", []):
                 self._append_log(wf, "context", f"Context issue: {issue.get('path')} - {issue.get('reason')}")
+
+            # --- Explorer Brief (L3 research layer) ---
+            explorer_brief = None
+            if wf.get("generate_explorer"):
+                try:
+                    from explorer import run_explorer_brief
+                    explorer_preview_key = wf.get("explorer_preview_key", {})
+                    # G3: verify explorerPreviewKey matches current request.
+                    explorer_key_ok = (
+                        not explorer_preview_key
+                        or (
+                            explorer_preview_key.get("targetKey") == wf["target_key"]
+                            and explorer_preview_key.get("prompt") == wf["prompt"]
+                        )
+                    )
+                    if explorer_key_ok:
+                        self._append_log(wf, "explorer", "Running Explorer research layer...")
+                        explorer_brief = run_explorer_brief(
+                            target_key=wf["target_key"],
+                            prompt=wf["prompt"],
+                        )
+                        self._append_log(
+                            wf, "explorer",
+                            f"Explorer complete: status={explorer_brief.get('status')}, "
+                            f"files={explorer_brief.get('limits', {}).get('filesRead', 0)}",
+                        )
+                    else:
+                        self._append_log(wf, "explorer", "Explorer skipped: stale preview key")
+                        explorer_brief = {"status": "skipped", "reason": "stale_preview"}
+                except Exception as exc:
+                    logger.warning("Explorer failed for %s: %s", wf["workflow_id"], exc)
+                    self._append_log(wf, "explorer", f"Explorer failed (L0 continues): {exc}")
+                    explorer_brief = {"status": "failed", "reason": str(exc)}
+            if explorer_brief:
+                context_pack["explorerBrief"] = explorer_brief
 
             conversation = await run_council(
                 prompt=wf["prompt"],
