@@ -408,7 +408,7 @@ Context: Blueprint ready · 3 suggested files · Add files
 
 ### 5.4 L3 Explorer Brief
 
-**狀態**：P3 — Phase 6f 規劃完成，待實作（6a–6e 已完成）。
+**狀態**：P3 — Phase 6f 已實作（6a–6e 已完成，6f MVP 已落地）。
 
 Explorer 是唯讀調研 agent，不是 executor。詳細規格見 **§12 Phase 6f**。
 
@@ -1061,6 +1061,8 @@ Phase 6c+:
 - Explorer 執行當下**不寫入** target project 或 `PLANNING/`。
 - **失敗隔離**：`explorerBrief = null` 或 `{status: "failed"|"timeout", summary: ""}`；`build_context_pack()` 照常產 L0/L1/L2；`accessIssues` / `warnings` 記錄 explorer 問題。**禁止**用 L0 tree 拼湊假 brief 或 LLM 補寫 summary。
 
+> **Phase 6f.2 對齊**：Orchestrator 層已實作完整 failure isolation——`_run_council_task()` 中 Explorer 執行包裹在獨立的 `try/except` 區塊內（`loop_orchestrator.py:482`）。任何 Explorer 內部錯誤（timeout、exception、missing key）都會被攔截為 `status: "failed"|"timeout"|"skipped"`、寫入 `explorerBrief.accessIssues`、並以 `logger.warning` 記錄，**絕不拋出阻斷 Council 啟動**。後續 `run_council()` 始終正常執行。
+
 #### 6f.2 啟用方式
 
 | 選項 | MVP 決策 |
@@ -1099,6 +1101,10 @@ ExplorerOp = Literal[
 
 **不可用**：install、build、test、formatter、git 寫操作、target project 任何寫入。
 
+> **Phase 6f.2 對齊**：MVP 實作允許 **`rg` (ripgrep) 作為 optional read-only acceleration**。
+> `_detect_rg()` 偵測系統是否安裝 `rg`；若可用則透過 subprocess 加速文字搜尋，否則自動降級為純 Python `os.walk` + `re.search` fallback。
+> 所有安全層（timeout、path filtering、secret masking、safe file gate）在 `rg` 路徑與 fallback 路徑均完整保留，`rg` **不作為硬依賴**。
+
 #### 6f.4 Safety gates（G1–G12）
 
 | Gate | 規則 |
@@ -1115,6 +1121,11 @@ ExplorerOp = Literal[
 | G10 | `maxCandidateFiles` in brief（建議 12） |
 | G11 | 每個 read/search 記錄 provenance → `commands[]` |
 | G12 | timeout / exception → `status=timeout\|failed`，**summary 必須為空字串** |
+
+> **Phase 6f.2 對齊 — Timeout 實作**：目前採用 `threading.Thread(daemon=True)` + `join(timeout=…)` 的 bounded-join 模式（`explorer.py:330–343`）。
+> worker thread 為 daemon（主線結束時不阻擋退出），join 超時後主線立即回傳 `status=timeout`，且 `summary` 清空為 `""`。
+> daemon worker 後續仍可能繼續執行，但其結果被丟棄。
+> 後續可升級為 cooperative cancellation（定期檢查 stop flag），但現有 bounded-join 已滿足 MVP 的安全需求。
 
 Explorer brief **不阻擋** auto-approve（與 scout_auto 不同）；brief 是摘要層。
 
@@ -1254,9 +1265,10 @@ Start Council 擴充 `NewConversationRequest`：
 |-----------|-----------|
 | 純 Python text search | LLM 生成 summary |
 | Template summary | AST / LSP symbol resolution |
-| 獨立 explorer preview API | `rg` subprocess |
+| 獨立 explorer preview API | 自動啟用 |
 | Panel 1 toggle + modal | Gate #1「建議加深調研」 |
-| `context_pack.explorerBrief` | 自動啟用 |
+| `context_pack.explorerBrief` | Auto-inject 至 contextFiles |
+| `rg` optional read-only acceleration（偵測->加速，無則 fallback） | `rg` 硬依賴 |
 | Start optional attach（含 preview key） | Explorer 修改 contextFiles |
 | Export provenance 摘要 | 完整 wizard |
 
