@@ -94,6 +94,30 @@
     .vendor-tag { display: inline-block; font-size: 11px; padding: 4px 8px; border-radius: 6px; margin: 2px 4px 2px 0; background: rgba(52,211,153,0.1); color: var(--ok); border: 1px solid rgba(52,211,153,0.2); font-weight: 600; }
     .vendor-tag.fail { background: rgba(239,68,68,0.1); color: var(--err); border: 1px solid rgba(239,68,68,0.2); }
     .model-disabled { opacity: 0.35; text-decoration: line-through; }
+    .context-bar { font-size: 12px; padding: 8px 12px; border-radius: 6px; margin-top: 6px; border: 1px solid var(--border); background: rgba(0,0,0,0.25); color: var(--muted); }
+    .context-bar a { color: var(--accent); text-decoration: underline; cursor: pointer; }
+    .context-bar a:hover { color: var(--accent-hover); }
+    .context-bar.scanning { color: var(--accent); border-color: var(--accent); }
+    .context-bar.ready { color: var(--ok); border-color: rgba(52,211,153,0.35); }
+    .context-bar.warning { color: var(--warn); border-color: rgba(251,191,36,0.35); }
+    .context-bar.error { color: var(--err); border-color: rgba(239,68,68,0.35); }
+    .context-alert { padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 12px; border: 1px solid transparent; }
+    .context-alert.yellow { background: rgba(251,191,36,0.1); color: var(--warn); border-color: rgba(251,191,36,0.3); }
+    .context-alert.orange { background: rgba(249,115,22,0.1); color: #f97316; border-color: rgba(249,115,22,0.3); }
+    .context-alert.red { background: rgba(239,68,68,0.1); color: var(--err); border-color: rgba(239,68,68,0.3); }
+    .context-alert.green { background: rgba(16,185,129,0.1); color: var(--ok); border-color: rgba(16,185,129,0.3); }
+    .context-details { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; background: rgba(0,0,0,0.15); padding: 8px 12px; }
+    .context-details-summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 13px; outline: none; user-select: none; }
+    .context-details-body { margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px; }
+    .preview-muted { color: var(--muted); }
+    .preview-ok { color: var(--ok); }
+    .preview-empty { color: var(--muted); }
+    .preview-content { max-height: 400px; overflow-y: auto; font-size: 12px; }
+    .preview-content h4 { font-size: 13px; color: var(--accent); margin: 12px 0 6px; }
+    .preview-content table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+    .preview-content th, .preview-content td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+    .preview-content th { color: var(--accent); }
+    .preview-content pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; overflow-x: auto; }
     @media (max-width: 900px) { .setup-grid, .direct-keys { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -237,6 +261,9 @@
       <h2>發起圓桌會議</h2>
       <label>任務需求</label>
       <textarea id="prompt" placeholder="騎士集結，聆聽陛下指示！"></textarea>
+      <div id="context-bar" class="context-bar">
+        專案感知背景: 尚未預覽 · <a onclick="previewContext(); return false;">[預覽 Context]</a>
+      </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
         <div>
@@ -317,6 +344,17 @@
         <button class="btn btn-primary" onclick="approveCommit()">核准合併並提交 (Approve)</button>
         <button class="btn btn-secondary" onclick="requestChanges()">駁回並退件修改 (Request Changes)</button>
         <button class="btn btn-danger" onclick="cancelWorkflow()">中止並放棄工作流 (Cancel)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 6: Context Preview Modal -->
+  <div class="modal" id="context-preview-modal">
+    <div class="modal-box">
+      <h3>專案背景預覽</h3>
+      <div id="context-preview-content" class="preview-content"></div>
+      <div class="actions">
+        <button class="btn btn-secondary" onclick="closeContextPreview()">關閉</button>
       </div>
     </div>
   </div>
@@ -660,6 +698,8 @@
       const models = selectedModels();
       if (!models.length) return alert('請至少勾選一個可用的會議模型成員');
       document.getElementById('create-status').textContent = '圓桌會議進行中，正在收集各模型回答...';
+      const ctxBar = document.getElementById('context-bar');
+      if (ctxBar) { ctxBar.className = 'context-bar scanning'; ctxBar.textContent = '專案感知背景: 掃描中...'; }
       const body = {
         prompt, targetKey: document.getElementById('target-key').value,
         councilModels: models,
@@ -714,6 +754,223 @@
       }
     }
 
+    let lastContextPack = null;
+
+    function renderContextBar(pack) {
+      const bar = document.getElementById('context-bar');
+      if (!bar || !pack) return;
+      const files = pack.files || [];
+      
+      let klass = 'ready';
+      let statusText = '';
+      
+      if (pack.status === 'unavailable' || (!pack.level && files.length === 0)) {
+        klass = 'error';
+        statusText = '未載入背景資訊 (盲眼會議)';
+      } else if (pack.level === 'L0' || files.length === 0) {
+        klass = 'warning';
+        const bp = pack.blueprint || {};
+        const depCount = bp.dependencyPaths ? bp.dependencyPaths.length : 0;
+        const hasReadme = bp.hasReadme;
+        statusText = `L0 專案藍圖 (已載入 ${hasReadme ? 'README' : '無 README'} 與 ${depCount} 個依賴檔)`;
+      } else {
+        klass = 'ready';
+        statusText = `已載入 ${files.length} 份核心文件 (等級 ${pack.level})`;
+      }
+      
+      bar.className = 'context-bar ' + klass;
+      bar.innerHTML = `專案感知背景: ${statusText} · <a onclick="openContextPreview(); return false;">[預覽 Context]</a>`;
+    }
+
+    function renderContextAlert(pack) {
+      if (!pack || pack.status === 'unavailable') {
+        return `<div class="context-alert red">✕ <b>未載入專案背景 (Blind)</b>：圓桌成員將看不到目標專案內容，僅能憑空猜測，可能導致計畫與實際程式碼脫節。</div>`;
+      }
+      const files = pack.files || [];
+      if (pack.level === 'L0' || files.length === 0) {
+        const bp = pack.blueprint || {};
+        const depCount = bp.dependencyPaths ? bp.dependencyPaths.length : 0;
+        const hasReadme = bp.hasReadme;
+        return `<div class="context-alert yellow">⚠ <b>專案背景為 L0 藍圖 (Low Confidence)</b>：已載入專案結構樹、${hasReadme ? 'README' : '無 README'} 與 ${depCount} 個依賴設定檔。由於未指定具體程式檔案，圓桌成員將在專案級別進行規劃，信心度較低。</div>`;
+      }
+      return `<div class="context-alert green">✓ <b>專案背景已載入 (High Confidence)</b>：已載入 ${files.length} 份核心程式文件 (等級 ${pack.level}，約 ${pack.total_tokens || 0} tokens)。圓桌決議將基於真實程式內容進行細緻規劃。</div>`;
+    }
+
+    function renderContextAlerts(pack) {
+      let html = renderContextAlert(pack);
+      if (pack && (pack.summary?.truncated || (pack.warnings || []).includes('truncated'))) {
+        html += `<div class="context-alert orange">⚠ <b>部分背景內容已截斷</b>：專案樹狀結構、README 或設定檔可能未完整納入 Council，請審慎評估計畫依據。</div>`;
+      }
+      return html;
+    }
+
+    function resolveContextPreview(conv) {
+      if (!conv) return null;
+      if (conv.context && conv.context.preview) {
+        return conv.context.preview;
+      }
+      if (conv.context_pack) {
+        const pack = conv.context_pack;
+        const summary = pack.summary || {};
+        const blueprint = pack.blueprint || {};
+        const files = pack.files || [];
+        const accessIssues = pack.accessIssues || [];
+        
+        const treeText = blueprint.tree || "";
+        const treeLines = treeText.split('\n');
+        const treePreview = treeLines.slice(0, 30).join('\n');
+        const treeTruncated = treeLines.length > 30;
+        
+        const preview = {
+          version: pack.version || 1,
+          targetKey: pack.targetKey || '',
+          level: pack.level || 'L0',
+          status: summary.status || 'ready',
+          summary: {
+            includedFiles: summary.includedFiles || 0,
+            totalChars: summary.totalChars || 0,
+            truncated: summary.truncated || false,
+            excludedFiles: accessIssues.length,
+          },
+          total_tokens: Math.round((summary.totalChars || 0) / 4),
+          files: files.map(f => ({
+            path: f.path || '',
+            source: f.source || '',
+            chars: f.chars || 0,
+            truncated: f.truncated || false,
+          })),
+          blueprint: {
+            hasReadme: !!blueprint.readme,
+            dependencyPaths: (blueprint.dependencies || []).map(d => d.path || ''),
+            treePreview: treePreview,
+            treeTruncated: treeTruncated,
+          },
+          accessIssues: accessIssues.slice(0, 20),
+          totalAccessIssues: accessIssues.length,
+          warnings: [],
+        };
+        if (!files.length) preview.warnings.push('l0_only');
+        if (summary.truncated) preview.warnings.push('truncated');
+        return preview;
+      }
+      return null;
+    }
+
+    function formatContextWarning(code) {
+      const labels = {
+        l0_only: '僅 L0 藍圖（未指定具體程式檔案）',
+        truncated: '部分內容已超出字元預算而截斷',
+        unavailable: '未載入專案背景',
+      };
+      return labels[code] || code;
+    }
+
+    function renderContextPreviewContent(pack) {
+      if (!pack) return '<p class="preview-empty">無可用背景資訊。</p>';
+      const files = pack.files || [];
+      const isL0 = pack.level === 'L0' || files.length === 0;
+      const included = pack.summary?.includedFiles ?? 0;
+      let html = `<p><strong>背景等級:</strong> ${escapeHtml(pack.level || 'Unknown')}</p>`;
+      if (isL0) {
+        html += `<p><strong>L0 藍圖內容:</strong> ${included} 項已納入 Council（目錄樹、README、依賴/設定檔摘要）</p>`;
+      } else {
+        html += `<p><strong>附加核心檔案:</strong> ${files.length} 個</p>`;
+      }
+      if (pack.total_tokens) html += `<p><strong>估算 Tokens:</strong> ~${pack.total_tokens}</p>`;
+
+      if (files.length) {
+        html += '<h4>核心檔案清單</h4>';
+        html += '<table><tr><th>路徑</th><th>來源</th></tr>';
+        files.forEach(f => { html += `<tr><td>${escapeHtml(f.path)}</td><td>${escapeHtml(f.source || '-')}</td></tr>`; });
+        html += '</table>';
+      }
+
+      const bp = pack.blueprint;
+      if (bp) {
+        html += '<h4>專案藍圖資訊 (Blueprint)</h4>';
+        html += '<ul>';
+        html += `<li><strong>README 說明文件:</strong> ${bp.hasReadme ? '<span class="preview-ok">已載入</span>' : '<span class="preview-muted">無</span>'}</li>`;
+        if (bp.dependencyPaths && bp.dependencyPaths.length) {
+          html += `<li><strong>偵測到依賴/設定檔:</strong> ${bp.dependencyPaths.map(escapeHtml).join(', ')}</li>`;
+        }
+        html += '</ul>';
+
+        if (bp.treePreview) {
+          const trunc = bp.treeTruncated ? ' (部分截斷)' : '';
+          html += `<h4>專案目錄結構樹${trunc}</h4>`;
+          html += `<pre><code>${escapeHtml(bp.treePreview)}</code></pre>`;
+        }
+      }
+
+      const accessIssues = pack.accessIssues || [];
+      if (accessIssues.length) {
+        html += '<h4>排除項目 (Access Issues)</h4><ul>';
+        accessIssues.forEach(issue => {
+          html += `<li><code>${escapeHtml(issue.path || '')}</code>: ${escapeHtml(issue.reason || '')}</li>`;
+        });
+        const total = pack.totalAccessIssues || accessIssues.length;
+        if (total > accessIssues.length) {
+          html += `<li class="preview-muted">…及其他 ${total - accessIssues.length} 項</li>`;
+        }
+        html += '</ul>';
+      }
+
+      if (pack.error) html += `<p class="context-alert red"><strong>錯誤:</strong> ${escapeHtml(pack.error)}</p>`;
+      if (pack.warnings && pack.warnings.length) {
+        html += '<h4>警告</h4><ul>';
+        pack.warnings.forEach(w => { html += `<li>${escapeHtml(formatContextWarning(w))}</li>`; });
+        html += '</ul>';
+      }
+      return html;
+    }
+
+    function escapeHtml(text) {
+      if (text == null) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    async function previewContext() {
+      const bar = document.getElementById('context-bar');
+      bar.className = 'context-bar scanning';
+      bar.textContent = '專案感知背景: 掃描中...';
+      const body = {
+        targetKey: document.getElementById('target-key').value,
+        prompt: document.getElementById('prompt').value,
+        autoScoutContext: true,
+      };
+      try {
+        const res = await fetch(`${API}/api/maw/context/preview`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          const msg = err.detail || `HTTP ${res.status}`;
+          bar.className = 'context-bar error';
+          bar.innerHTML = `專案感知背景: 預覽失敗 — ${escapeHtml(msg)} · <a onclick="previewContext(); return false;">[重試]</a>`;
+          return;
+        }
+        const preview = await res.json();
+        lastContextPack = preview;
+        renderContextBar(preview);
+        openContextPreview();
+      } catch (e) {
+        bar.className = 'context-bar error';
+        bar.innerHTML = `專案感知背景: 網路錯誤 · <a onclick="previewContext(); return false;">[重試]</a>`;
+      }
+    }
+
+    function openContextPreview() {
+      document.getElementById('context-preview-content').innerHTML = renderContextPreviewContent(lastContextPack);
+      document.getElementById('context-preview-modal').classList.add('open');
+    }
+
+    function closeContextPreview() {
+      document.getElementById('context-preview-modal').classList.remove('open');
+    }
+
     async function loadCouncilResults() {
       const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}`);
       const data = await res.json();
@@ -721,7 +978,20 @@
       const msg = conv.messages.find(m => m.stage3);
       if (!msg) return;
       document.getElementById('panel2-title').textContent = '圓桌決議審查';
-      let html = '';
+      const ctx = resolveContextPreview(conv);
+      if (ctx) {
+        lastContextPack = ctx;
+        renderContextBar(ctx);
+      }
+      let html = renderContextAlerts(ctx);
+      if (ctx) {
+        html += `
+        <details class="context-details">
+          <summary class="context-details-summary">圓桌會議背景依據 (Provenance Details)</summary>
+          <div class="context-details-body">${renderContextPreviewContent(ctx)}</div>
+        </details>
+        `;
+      }
       if (msg.stage1) {
          html += '<div class="stage-block"><h3>Stage 1 — 武士獨立回答</h3>';
          msg.stage1.forEach(s => { html += `<p><strong>${s.model}</strong></p><div>${marked.parse(s.response)}</div>`; });
@@ -797,10 +1067,17 @@
 
     // Direct translation helper for logger streams
     function appendLog(entry) {
+      if (entry.stream === 'context') {
+        const statusEl = document.getElementById('create-status');
+        if (statusEl && statusEl.textContent.indexOf('會議完成') === -1) {
+          statusEl.textContent = '圓桌會議準備中：' + entry.line;
+        }
+      }
       const term = document.getElementById('terminal');
       let prefix = '';
       if (entry.stream === 'stderr') prefix = '[錯誤] ';
       else if (entry.stream === 'git') prefix = '[GIT] ';
+      else if (entry.stream === 'context') prefix = '[背景掃描] ';
       term.textContent += `${entry.ts} ${prefix}${entry.line}\n`;
       term.scrollTop = term.scrollHeight;
     }

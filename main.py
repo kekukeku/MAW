@@ -21,6 +21,7 @@ from council.config import (
 )
 from council.storage import list_conversations, load_conversation
 from loop_orchestrator import orchestrator, ALLOW_AUTO_COMMIT
+from project_context import build_context_pack, build_context_preview_response, ContextTargetError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -92,6 +93,13 @@ class NewConversationRequest(BaseModel):
     filesAffected: str = "To be determined by executor after repository inspection"
     nonGoals: str = "None specified."
     mock: Optional[bool] = None
+
+
+class ContextPreviewRequest(BaseModel):
+    targetKey: str
+    prompt: str
+    contextFiles: Optional[List[str]] = None
+    autoScoutContext: bool = True
 
 
 class ApproveCouncilRequest(BaseModel):
@@ -245,6 +253,27 @@ async def create_conversation(req: NewConversationRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/maw/context/preview")
+async def preview_context(req: ContextPreviewRequest):
+    """Preview target project context.
+
+    Phase 6c-A: contextFiles and autoScoutContext are accepted for schema
+    compatibility only; they are ignored because L1/L2 context selection is not
+    yet implemented.
+    """
+    try:
+        context_pack = build_context_pack(
+            target_key=req.targetKey,
+            prompt=req.prompt,
+        )
+        return build_context_preview_response(context_pack)
+    except ContextTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Context preview failed for target %s", req.targetKey)
+        raise HTTPException(status_code=500, detail=f"Context preview failed: {e}")
 
 
 @app.post("/api/maw/conversations/{conversation_id}/approve")

@@ -23,6 +23,13 @@ from maw_paths import get_project_root
 
 logger = logging.getLogger(__name__)
 
+
+class ContextTargetError(ValueError):
+    """Raised when a target key cannot be resolved or the target path is invalid."""
+
+    pass
+
+
 CONTEXT_PACK_VERSION = 1
 
 # Default character budgets for Phase 6a.
@@ -466,12 +473,12 @@ def build_context_pack(
     targets = load_targets()
     projects = targets.get("projects", {})
     if target_key not in projects:
-        raise ValueError(f"Unknown target key: '{target_key}'.")
+        raise ContextTargetError(f"Unknown target key: '{target_key}'.")
 
     target_path = projects[target_key].get("path", "")
     root = Path(get_project_root(target_path))
     if not root.is_dir():
-        raise ValueError(f"Target directory does not exist: {root}")
+        raise ContextTargetError(f"Target directory does not exist: {root}")
 
     generated_at = datetime.now(timezone.utc).isoformat()
     access_issues: list[dict[str, Any]] = []
@@ -522,6 +529,7 @@ def build_context_pack(
     context_pack: dict[str, Any] = {
         "version": CONTEXT_PACK_VERSION,
         "targetKey": target_key,
+        "level": "L0",
         "targetPath": str(root),
         "generatedAt": generated_at,
         "policy": effective_policy,
@@ -668,3 +676,61 @@ def compact_context_digest(context_pack: dict[str, Any]) -> str:
         lines.append(f"- Dependency/config files: {dep_names}")
     lines.append("- Context boundary: only make claims supported by the provided project context.")
     return "\n".join(lines)
+
+
+def build_context_preview_response(context_pack: dict[str, Any]) -> dict[str, Any]:
+    """Return a slim, UI-safe preview of a context pack.
+
+    Removes heavy text blobs (README text, dependency file contents, full tree)
+    while keeping enough metadata for the Panel 1 context bar and preview modal.
+    """
+    summary = context_pack.get("summary", {})
+    blueprint = context_pack.get("blueprint", {})
+    files = context_pack.get("files", [])
+    access_issues = context_pack.get("accessIssues", [])
+
+    warnings_list: list[str] = []
+    if not files:
+        warnings_list.append("l0_only")
+    if summary.get("truncated"):
+        warnings_list.append("truncated")
+
+    tree_text = blueprint.get("tree", "")
+    tree_lines = tree_text.splitlines()
+    tree_preview = "\n".join(tree_lines[:30])
+    tree_truncated = len(tree_lines) > 30
+
+    total_chars = summary.get("totalChars", 0)
+    total_tokens = int(total_chars / 4) if total_chars else 0
+
+    return {
+        "version": context_pack.get("version", CONTEXT_PACK_VERSION),
+        "targetKey": context_pack.get("targetKey", ""),
+        "level": context_pack.get("level", "L0"),
+        "status": summary.get("status", "unknown"),
+        "summary": {
+            "includedFiles": summary.get("includedFiles", 0),
+            "totalChars": total_chars,
+            "truncated": summary.get("truncated", False),
+            "excludedFiles": len(access_issues),
+        },
+        "total_tokens": total_tokens,
+        "files": [
+            {
+                "path": f.get("path", ""),
+                "source": f.get("source", ""),
+                "chars": f.get("chars", 0),
+                "truncated": f.get("truncated", False),
+            }
+            for f in files
+        ],
+        "blueprint": {
+            "hasReadme": bool(blueprint.get("readme")),
+            "dependencyPaths": [d.get("path", "") for d in blueprint.get("dependencies", [])],
+            "treePreview": tree_preview,
+            "treeTruncated": tree_truncated,
+        },
+        "accessIssues": access_issues[:20],
+        "totalAccessIssues": len(access_issues),
+        "warnings": warnings_list,
+    }

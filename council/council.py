@@ -8,7 +8,7 @@ from typing import Any
 from council.config import MOCK_MODE
 from council.llm_provider import query_model, query_models_parallel, LLMProviderError
 from council.storage import create_conversation_skeleton, save_conversation
-from project_context import build_prompt_envelope, compact_context_digest
+from project_context import build_prompt_envelope, compact_context_digest, build_context_preview_response
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,9 @@ async def run_council(
 
     conversation = create_conversation_skeleton(title or prompt[:80], prompt)
     conversation["context_pack"] = context_pack
+    conversation["context"] = {
+        "preview": build_context_preview_response(context_pack) if context_pack else None,
+    }
 
     if use_mock:
         result = _build_mock_council_result(prompt, council_models, chairman_model, context_pack=context_pack)

@@ -198,8 +198,27 @@ class TestProjectContext(unittest.TestCase):
         self.assertIn("Directory tree", digest)
 
     def test_unknown_target_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(pc.ContextTargetError):
             pc.build_context_pack("unknown", "Implement feature X")
+
+    def test_build_context_preview_response(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X")
+        preview = pc.build_context_preview_response(pack)
+        self.assertEqual(preview["version"], pack["version"])
+        self.assertEqual(preview["targetKey"], pack["targetKey"])
+        self.assertNotIn("targetPath", preview)
+        self.assertEqual(preview["level"], pack["level"])
+        self.assertNotIn("text", preview)
+        self.assertIn("files", preview)
+        self.assertIsInstance(preview["warnings"], list)
+        # blueprint is included but as a slim metadata preview, not the full tree/README text.
+        self.assertIn("blueprint", preview)
+        self.assertNotIn("readme", preview["blueprint"])
+        self.assertNotIn("dependencies", preview["blueprint"])
+        if preview["files"]:
+            self.assertNotIn("content", preview["files"][0])
+            self.assertIn("path", preview["files"][0])
 
     def test_no_readme_still_ready(self):
         (self.target_root / "README.md").unlink()
