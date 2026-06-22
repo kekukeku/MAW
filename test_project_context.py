@@ -259,10 +259,21 @@ class TestProjectContext(unittest.TestCase):
         self.assertIn("def util", envelope)
 
     def test_l1_traversal_path_rejected(self):
-        with self.assertRaises(pc.ContextTargetError):
-            pc.build_context_pack("test", "Implement feature X", context_files=["../escape.py"])
-        with self.assertRaises(pc.ContextTargetError):
-            pc.build_context_pack("test", "Implement feature X", context_files=["/etc/passwd"])
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["../escape.py"])
+        self.assertEqual(pack["level"], "L0")
+        self.assertEqual(len(pack["files"]), 0)
+        self.assertTrue(
+            any("Rejected traversal path" in i.get("reason", "") for i in pack["accessIssues"])
+        )
+
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["/etc/passwd"])
+        self.assertEqual(pack["level"], "L0")
+        self.assertEqual(len(pack["files"]), 0)
+        self.assertTrue(
+            any("Rejected absolute path" in i.get("reason", "") for i in pack["accessIssues"])
+        )
 
     def test_l1_non_existent_file_rejected(self):
         with self._load_targets_patch():

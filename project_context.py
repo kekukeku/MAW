@@ -607,8 +607,10 @@ def build_context_pack(
     L1: If context_files is non-empty, user-selected files are read and added.
 
     Raises:
-        ContextTargetError: if target_key is unknown, target path is invalid,
-            or any context_file fails path-safety validation.
+        ContextTargetError: if target_key is unknown or target path is invalid.
+
+    Per-file L1 failures (bad path, secret, gitignored, etc.) are recorded in
+    accessIssues and do not abort the pack; L0 blueprint is still produced.
     """
     context_files = context_files or []
     auto_scout = False  # Scout not implemented.
