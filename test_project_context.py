@@ -446,6 +446,9 @@ class TestProjectContext(unittest.TestCase):
     def _patch_scout_suggestions(self, suggestions):
         return patch.object(pc, "scout_suggestions", return_value=suggestions)
 
+    def _live_preview_key(self, prompt="Fix auth.py"):
+        return {"targetKey": "test", "prompt": prompt}
+
     def test_default_no_auto_include(self):
         """auto_include_scout=False by default: no scout files injected."""
         (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
@@ -460,7 +463,10 @@ class TestProjectContext(unittest.TestCase):
         (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
         suggestions = [{"path": "src/auth.py", "score": 125, "reasons": ["filename_match", "content_match:2kws"], "size": 200, "kind": "py"}]
         with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
-            pack = pc.build_context_pack("test", "Fix auth.py", auto_include_scout=True, min_scout_score=40)
+            pack = pc.build_context_pack(
+                "test", "Fix auth.py", auto_include_scout=True, min_scout_score=40,
+                scout_preview_key=self._live_preview_key("Fix auth.py"),
+            )
         auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
         self.assertEqual(len(auto), 1)
         self.assertEqual(auto[0]["path"], "src/auth.py")
@@ -473,7 +479,10 @@ class TestProjectContext(unittest.TestCase):
         (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
         suggestions = [{"path": "src/auth.py", "score": 100, "reasons": ["filename_match"], "size": 20, "kind": "py"}]
         with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
-            pack = pc.build_context_pack("test", "Fix auth.py", context_files=["src/auth.py"], auto_include_scout=True)
+            pack = pc.build_context_pack(
+                "test", "Fix auth.py", context_files=["src/auth.py"], auto_include_scout=True,
+                scout_preview_key=self._live_preview_key("Fix auth.py"),
+            )
         # Only one entry, source should be user_selected (manual), not scout_auto_selected.
         self.assertEqual(len(pack["files"]), 1)
         self.assertEqual(pack["files"][0]["source"], "user_selected")
@@ -497,8 +506,21 @@ class TestProjectContext(unittest.TestCase):
         (self.target_root / "src" / "low.py").write_text("low", encoding="utf-8")
         suggestions = [{"path": "src/low.py", "score": 30, "reasons": ["keyword"], "size": 4, "kind": "py"}]
         with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
-            pack = pc.build_context_pack("test", "Fix low", auto_include_scout=True, min_scout_score=50)
+            pack = pc.build_context_pack(
+                "test", "Fix low", auto_include_scout=True, min_scout_score=50,
+                scout_preview_key=self._live_preview_key("Fix low"),
+            )
         self.assertEqual(len(pack["files"]), 0)
+
+    def test_auto_include_missing_preview_key(self):
+        """G3: missing scoutPreviewKey → auto_include skipped."""
+        (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
+        suggestions = [{"path": "src/auth.py", "score": 100, "reasons": ["match"], "size": 20, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack("test", "Fix auth.py", auto_include_scout=True)
+        auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
+        self.assertEqual(len(auto), 0)
+        self.assertTrue(any("missing_preview_key" in i.get("reason", "") for i in pack["accessIssues"]))
 
     def test_auto_include_max_cap(self):
         """G9: maxAutoScoutFiles caps the number of auto-included files."""
@@ -509,7 +531,10 @@ class TestProjectContext(unittest.TestCase):
             for i in range(5)
         ]
         with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
-            pack = pc.build_context_pack("test", "Fix files", auto_include_scout=True, max_auto_scout=2)
+            pack = pc.build_context_pack(
+                "test", "Fix files", auto_include_scout=True, max_auto_scout=2,
+                scout_preview_key=self._live_preview_key("Fix files"),
+            )
         auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
         self.assertLessEqual(len(auto), 2)
 

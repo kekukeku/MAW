@@ -405,8 +405,8 @@ def _render_context_summary(context_pack):
         "",
         "### Files Provided to Council",
         "",
-        "| Path | Source | Chars | Truncated |",
-        "|------|--------|-------|-----------|",
+        "| Path | Source | Method | Scout Score | Chars | Truncated |",
+        "|------|--------|--------|-------------|-------|-----------|",
     ]
 
     files = context_pack.get("files", [])
@@ -426,11 +426,14 @@ def _render_context_summary(context_pack):
         })
 
     if not files:
-        lines.append("| (none) | - | - | - |")
+        lines.append("| (none) | - | - | - | - | - |")
     else:
         for f in files:
+            score = f.get("scoutScore", "")
+            method = f.get("selectionMethod", "") or "-"
+            score_str = str(score) if score != "" else "-"
             lines.append(
-                f"| {f.get('path', '')} | {f.get('source', '')} | {f.get('chars', 0)} | {f.get('truncated', False)} |"
+                f"| {f.get('path', '')} | {f.get('source', '')} | {method} | {score_str} | {f.get('chars', 0)} | {f.get('truncated', False)} |"
             )
 
     access_issues = context_pack.get("accessIssues", [])

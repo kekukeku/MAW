@@ -662,17 +662,20 @@ def build_context_pack(
     auto_files: list[dict[str, Any]] = []
     user_selected_paths = {f["path"] for f in l1_files}
     if auto_include_scout and prompt.strip():
-        # G3: verify scoutPreviewKey matches current request.
-        preview_key_ok = True
-        if scout_preview_key:
+        # G3: require scoutPreviewKey and verify it matches current request.
+        if not scout_preview_key:
+            preview_key_ok = False
+            skip_reason = "scout_auto_skipped:missing_preview_key"
+        else:
             preview_key_ok = (
                 scout_preview_key.get("targetKey") == target_key
                 and scout_preview_key.get("prompt") == prompt
             )
+            skip_reason = "scout_auto_skipped:stale_preview"
         if not preview_key_ok:
             access_issues.append({
                 "path": "<scout_auto>",
-                "reason": "scout_auto_skipped:stale_preview",
+                "reason": skip_reason,
             })
         else:
             try:

@@ -120,6 +120,7 @@
     .preview-content pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; overflow-x: auto; }
     .file-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: rgba(59,130,246,0.15); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); border-radius: 12px; padding: 2px 8px; margin: 2px 4px 2px 0; white-space: nowrap; }
     .file-chip.file-chip-auto { background: rgba(147,51,234,0.15); color: #c084fc; border-color: rgba(147,51,234,0.35); }
+    .file-chip.file-chip-auto .file-chip-tag { font-size: 9px; opacity: 0.85; margin-left: 2px; }
     .file-chip-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
     .file-chip-remove:hover { color: var(--err); }
     .file-selector-list { max-height: 350px; overflow-y: auto; font-size: 12px; }
@@ -1014,14 +1015,20 @@
     function renderSelectedFileChips() {
       const container = document.getElementById('selected-files-chips');
       if (!container) return;
-      if (!selectedContextFiles.length) {
+      const autoPaths = getAutoIncludedPaths();
+      const wouldAuto = (lastContextPack?.wouldAutoInclude || []).filter(s => autoPaths.has(s.path));
+      if (!selectedContextFiles.length && !wouldAuto.length) {
         container.innerHTML = '';
         return;
       }
-      const autoPaths = getAutoIncludedPaths();
       let html = '';
       selectedContextFiles.forEach(p => {
-        html += renderChipHtml(p, autoPaths.has(p));
+        html += renderChipHtml(p, false, true);
+      });
+      wouldAuto.forEach(s => {
+        if (!selectedContextFiles.includes(s.path)) {
+          html += renderChipHtml(s.path, true, false);
+        }
       });
       container.innerHTML = html;
     }
@@ -1057,9 +1064,15 @@
       const scoutHint = suggested.length
         ? (isStale ? ' · ⚠ Scout 建議已過期，請重新預覽' : ` · Scout 推薦 ${suggested.length} 個檔案`)
         : '';
+      const autoIncludeOn = document.getElementById('auto-include-scout')?.checked;
+      const wouldCount = (autoIncludeOn && areSuggestionsLive() && pack.wouldAutoInclude)
+        ? pack.wouldAutoInclude.length : 0;
+      const autoHint = wouldCount
+        ? ` · 將自動納入 ${wouldCount} 份 Scout 推薦`
+        : (autoIncludeOn && !areSuggestionsLive() ? ' · ⚠ 自動納入待重新預覽' : '');
 
-      bar.className = 'context-bar ' + (isStale && suggested.length ? 'warning' : klass);
-      bar.innerHTML = `專案感知背景: ${statusText}${scoutHint} · <a onclick="previewContext(); return false;">[預覽 Context]</a>`;
+      bar.className = 'context-bar ' + ((isStale && suggested.length) || (autoIncludeOn && !areSuggestionsLive()) ? 'warning' : klass);
+      bar.innerHTML = `專案感知背景: ${statusText}${scoutHint}${autoHint} · <a onclick="previewContext(); return false;">[預覽 Context]</a>`;
     }
 
     function renderContextAlert(pack) {
@@ -1162,56 +1175,56 @@
       const cb = document.getElementById('auto-include-scout');
       const hint = document.getElementById('auto-include-hint');
       saveAutoIncludePref(cb.checked);
-      if (cb.checked) {
-        // Require preview before Start.
-        if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
-          hint.style.display = 'inline';
-        } else {
-          hint.style.display = 'none';
-        }
-      } else {
-        hint.style.display = 'none';
-      }
+      refreshAutoIncludeHint();
+      renderSelectedFileChips();
+      if (lastContextPack) renderContextBar(lastContextPack);
     }
 
     function refreshAutoIncludeHint() {
       const cb = document.getElementById('auto-include-scout');
       const hint = document.getElementById('auto-include-hint');
       if (cb && cb.checked) {
+        const current = getCurrentPreviewContext();
         if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
           hint.style.display = 'inline';
           hint.textContent = '請先點擊預覽以產生背景分析';
-        } else if (lastPreviewKey.targetKey !== (document.getElementById('target-key')?.value || '') ||
-                   lastPreviewKey.prompt !== (document.getElementById('prompt')?.value || '')) {
+        } else if (lastPreviewKey.targetKey !== current.targetKey ||
+                   lastPreviewKey.prompt !== current.prompt) {
           hint.style.display = 'inline';
           hint.textContent = '建議已過期，請重新預覽';
         } else {
           hint.style.display = 'none';
         }
+      } else if (hint) {
+        hint.style.display = 'none';
       }
     }
 
-    function renderChipHtml(path, isAuto) {
+    function renderChipHtml(path, isAuto, removable) {
       const cls = isAuto ? 'file-chip file-chip-auto' : 'file-chip';
-      return `<span class="${cls}">${escapeHtml(path)}<button class="file-chip-remove" onclick="toggleFileSelection('${escapeHtml(path)}', false);filterFileSelector();void 0;">✕</button></span>`;
+      const tag = isAuto ? '<span class="file-chip-tag">自動</span>' : '';
+      const removeBtn = removable
+        ? `<button class="file-chip-remove" onclick="toggleFileSelection('${escapeHtml(path)}', false);filterFileSelector();void 0;">✕</button>`
+        : '';
+      return `<span class="${cls}">${escapeHtml(path)}${tag}${removeBtn}</span>`;
     }
 
     function getAutoIncludedPaths() {
-      if (!lastContextPack || !lastContextPack.wouldAutoInclude) return new Set();
+      const cb = document.getElementById('auto-include-scout');
+      if (!cb?.checked || !areSuggestionsLive()) return new Set();
+      if (!lastContextPack?.wouldAutoInclude) return new Set();
       return new Set(lastContextPack.wouldAutoInclude.map(s => s.path));
     }
 
     function startCouncilGuard() {
       const cb = document.getElementById('auto-include-scout');
       if (!cb || !cb.checked) return true;
-      // Must have previewed first and not stale.
-      const ct = document.getElementById('target-key')?.value || '';
-      const cp = document.getElementById('prompt')?.value || '';
+      const current = getCurrentPreviewContext();
       if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
         alert('請先點擊 [預覽 Context] 以產生背景分析，再啟用自動納入功能。');
         return false;
       }
-      if (lastPreviewKey.targetKey !== ct || lastPreviewKey.prompt !== cp) {
+      if (lastPreviewKey.targetKey !== current.targetKey || lastPreviewKey.prompt !== current.prompt) {
         alert('Scout 建議已過期（專案或需求已變更），請重新點擊 [預覽 Context]。');
         return false;
       }
@@ -1238,9 +1251,20 @@
         html += '</table>';
       }
 
+      const wouldAuto = pack.wouldAutoInclude || [];
+      if (wouldAuto.length) {
+        html += '<h4>將自動納入 Council（啟用自動納入時）</h4>';
+        html += '<table><tr><th>路徑</th><th>分數</th><th>原因</th></tr>';
+        wouldAuto.forEach(s => {
+          const reasons = (s.reasons || []).slice(0, 2).join(', ');
+          html += `<tr><td>${escapeHtml(s.path)}</td><td>${escapeHtml(String(s.score))}</td><td>${escapeHtml(reasons || '-')}</td></tr>`;
+        });
+        html += '</table>';
+      }
+
       const suggested = pack.suggestedFiles || [];
       if (suggested.length) {
-        html += '<h4>Scout 推薦檔案（尚未自動加入 Council）</h4>';
+        html += '<h4>Scout 推薦檔案（預覽建議）</h4>';
         html += '<table><tr><th>路徑</th><th>分數</th><th>原因</th></tr>';
         suggested.forEach(s => {
           const reasons = (s.reasons || []).slice(0, 2).join(', ');
@@ -1322,6 +1346,7 @@
         lastContextPack = preview;
         lastPreviewKey = { targetKey: current.targetKey, prompt: current.prompt };
         renderContextBar(preview);
+        renderSelectedFileChips();
         refreshAutoIncludeHint();
         openContextPreview();
       } catch (e) {

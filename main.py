@@ -242,6 +242,11 @@ async def get_conversation_details(conversation_id: str):
 async def create_conversation(req: NewConversationRequest):
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt is required.")
+    if req.autoIncludeScoutFiles and not req.scoutPreviewKey:
+        raise HTTPException(
+            status_code=400,
+            detail="scoutPreviewKey is required when autoIncludeScoutFiles is enabled.",
+        )
     if req.councilModels and not req.mock and not MOCK_MODE:
         llm_data = setup_api.get_llm_models()
         enabled = {m["id"] for m in llm_data["models"] if m["enabled"]}

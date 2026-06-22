@@ -184,6 +184,55 @@ class TestContextPreviewAPI(unittest.TestCase):
         self.assertGreater(len(body["suggestedFiles"]), 0)
         self.assertEqual(body.get("files", []), [])
 
+    def test_preview_includes_would_auto_include_dry_run(self):
+        """Phase 6e-C: preview returns wouldAutoInclude dry-run list."""
+        suggestions = [
+            {"path": "src/auth.py", "score": 100, "reasons": ["filename_match:auth.py"], "size": 200, "kind": "py"},
+            {"path": "src/tokens.py", "score": 30, "reasons": ["keyword_in_path:token"], "size": 100, "kind": "py"},
+            {"path": "src/other.py", "score": 80, "reasons": ["match"], "size": 50, "kind": "py"},
+        ]
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "level": "L0",
+            "summary": {"status": "ready", "includedFiles": 2, "totalChars": 100, "truncated": False},
+            "blueprint": {"tree": "src/", "readme": "# Test", "dependencies": []},
+            "files": [],
+            "accessIssues": [],
+        }
+        with patch.object(main, "build_context_pack", return_value=pack), \
+             patch.object(main, "scout_suggestions", return_value=suggestions):
+            res = self.client.post(
+                "/api/maw/context/preview",
+                json={
+                    "targetKey": "test",
+                    "prompt": "Fix authentication",
+                    "autoScoutContext": True,
+                    "maxAutoScoutFiles": 2,
+                    "minScoutScore": 40,
+                    "contextFiles": ["src/auth.py"],
+                },
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("wouldAutoInclude", body)
+        self.assertEqual(len(body["wouldAutoInclude"]), 1)
+        self.assertEqual(body["wouldAutoInclude"][0]["path"], "src/other.py")
+        self.assertEqual(body["wouldAutoInclude"][0]["source"], "scout_auto_selected")
+
+    def test_create_conversation_requires_scout_preview_key_when_auto_include(self):
+        res = self.client.post(
+            "/api/maw/conversations/new",
+            json={
+                "prompt": "Fix auth",
+                "targetKey": "test",
+                "autoIncludeScoutFiles": True,
+                "mock": True,
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("scoutPreviewKey", res.json()["detail"])
+
     def test_preview_no_suggested_files_when_scout_disabled(self):
         """When autoScoutContext=False, suggestedFiles is absent from preview."""
         with patch.object(main, "build_context_pack", return_value={

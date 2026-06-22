@@ -199,7 +199,7 @@ Some headers.
             "accessIssues": [],
         }
         summary = _render_context_summary(context_pack)
-        self.assertIn("| package.json | blueprint | 200 | False |", summary)
+        self.assertIn("| package.json | blueprint | - | - | 200 | False |", summary)
         self.assertNotIn("| README | blueprint | 0 | False |", summary)
 
     def test_derive_files_affected_with_user_input(self):
