@@ -840,7 +840,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
                 omit_msg = f"\n[... README truncated by total budget: {len(readme) - len(cut)} chars omitted ...]\n"
                 bp_parts.extend([readme_header, cut, omit_msg, ""])
                 remaining = 0
-                truncated_parts.append("readme")
+                truncated_parts.append(f"readme_truncated:{len(readme)}chars")
         else:
             bp_parts.append(f"### README\n[... omitted — insufficient budget ({remaining} chars) ...]\n\n")
             remaining = 0

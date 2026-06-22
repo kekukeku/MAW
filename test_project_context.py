@@ -407,10 +407,6 @@ class TestProjectContext(unittest.TestCase):
         self.assertIn("def keep_me", envelope)
         self.assertIn("src/keep.py", envelope)
 
-        # With 1200 budget and tree=~2700 chars, tree should be truncated.
-        if len(envelope) > 1300:
-            # Still expect L1 content.
-            pass
         self.assertIn("tree truncated by total budget", envelope.lower().replace("_", " "))
 
     def test_budget_truncation_markers_are_specific(self):
