@@ -292,6 +292,10 @@ class LoopOrchestrator:
         non_goals: str = "None specified.",
         mock: bool | None = None,
         context_files: list[str] | None = None,
+        auto_include_scout: bool = False,
+        max_auto_scout: int = 3,
+        min_scout_score: int = 40,
+        scout_preview_key: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create workflow and run council asynchronously."""
         targets = load_targets()
@@ -323,6 +327,10 @@ class LoopOrchestrator:
                 "non_goals": non_goals,
                 "mock": mock,
                 "context_files": context_files,
+                "auto_include_scout": auto_include_scout,
+                "max_auto_scout": max_auto_scout,
+                "min_scout_score": min_scout_score,
+                "scout_preview_key": scout_preview_key,
                 "review_iterations": 0,
                 "logs": [],
                 "reason": None,
@@ -379,6 +387,15 @@ class LoopOrchestrator:
 
         return True, ""
 
+    def _has_scout_auto_selected(self, context_pack: dict[str, Any] | None) -> bool:
+        """Return True if any context file was scout-auto-selected."""
+        if not context_pack:
+            return False
+        return any(
+            f.get("source") == "scout_auto_selected"
+            for f in context_pack.get("files", [])
+        )
+
     async def _run_council_task(self, wf_id: str) -> None:
         wf = self._workflows.get(wf_id)
         if not wf:
@@ -394,6 +411,10 @@ class LoopOrchestrator:
                     target_key=wf["target_key"],
                     prompt=wf["prompt"],
                     context_files=wf.get("context_files"),
+                    auto_include_scout=wf.get("auto_include_scout", False),
+                    max_auto_scout=wf.get("max_auto_scout", 3),
+                    min_scout_score=wf.get("min_scout_score", 40),
+                    scout_preview_key=wf.get("scout_preview_key"),
                 )
             except Exception as exc:
                 logger.exception("Context gathering failed for %s", wf_id)
@@ -429,6 +450,13 @@ class LoopOrchestrator:
 
             # Auto-approve council if enabled in review policy (gate #1)
             can_auto, guard_reason = self._can_auto_approve_council(wf, context_pack)
+            # G10: block auto-approve when scout_auto_selected files present,
+            #      unless review_policy explicitly allows it.
+            if can_auto and self._has_scout_auto_selected(context_pack):
+                policy = wf.get("review_policy", {})
+                if not policy.get("allow_scout_auto_approve", False):
+                    can_auto = False
+                    guard_reason = "scout_auto_selected files present; allow_scout_auto_approve is false"
             if can_auto:
                 logger.info("Auto-approving council for %s", conversation["id"])
                 self._append_log(wf, "system", "Auto-approving council (skips gate #1)")

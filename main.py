@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
@@ -87,6 +87,13 @@ class ReviewPolicy(BaseModel):
     allow_request_changes: bool = True
     require_pre_commit_approval: bool = True
     auto_approve_council: bool = False
+    allow_l0_auto_approve: bool = False
+    allow_scout_auto_approve: bool = False
+
+
+class ScoutPreviewKey(BaseModel):
+    targetKey: str
+    prompt: str
 
 
 class NewConversationRequest(BaseModel):
@@ -101,6 +108,10 @@ class NewConversationRequest(BaseModel):
     mock: Optional[bool] = None
     contextFiles: Optional[List[str]] = None
     autoScoutContext: bool = True
+    autoIncludeScoutFiles: bool = False
+    maxAutoScoutFiles: int = 3
+    minScoutScore: int = 40
+    scoutPreviewKey: Optional[ScoutPreviewKey] = None
 
 
 class ContextPreviewRequest(BaseModel):
@@ -108,6 +119,8 @@ class ContextPreviewRequest(BaseModel):
     prompt: str
     contextFiles: Optional[List[str]] = None
     autoScoutContext: bool = True
+    maxAutoScoutFiles: int = 3
+    minScoutScore: int = 40
 
 
 class ApproveCouncilRequest(BaseModel):
@@ -256,6 +269,10 @@ async def create_conversation(req: NewConversationRequest):
             non_goals=req.nonGoals,
             mock=req.mock,
             context_files=req.contextFiles,
+            auto_include_scout=req.autoIncludeScoutFiles,
+            max_auto_scout=req.maxAutoScoutFiles,
+            min_scout_score=req.minScoutScore,
+            scout_preview_key=req.scoutPreviewKey.model_dump() if req.scoutPreviewKey else None,
         )
         return workflow
     except ValueError as e:
@@ -272,6 +289,9 @@ async def preview_context(req: ContextPreviewRequest):
     When autoScoutContext is True, runs the scout recommendation engine
     and returns suggestedFiles alongside the preview.  Scout results are
     never auto-injected into the context pack.
+
+    Also returns wouldAutoInclude when autoIncludeScoutFiles would be active
+    (dry-run simulation of what files would be auto-included).
     """
     try:
         context_pack = build_context_pack(
@@ -281,17 +301,53 @@ async def preview_context(req: ContextPreviewRequest):
             auto_scout=req.autoScoutContext,
         )
         suggested = None
+        would_auto_include = None
         if req.autoScoutContext and req.prompt.strip():
             try:
                 suggested = scout_suggestions(req.targetKey, req.prompt)
+                # Dry-run: simulate what would be auto-included.
+                would_auto_include = _compute_would_auto_include(
+                    suggested,
+                    user_paths=set(req.contextFiles or []),
+                    max_auto=req.maxAutoScoutFiles,
+                    min_score=req.minScoutScore,
+                )
             except Exception:
                 logger.warning("Scout suggestions failed for target %s", req.targetKey, exc_info=True)
-        return build_context_preview_response(context_pack, suggested_files=suggested)
+        return build_context_preview_response(
+            context_pack,
+            suggested_files=suggested,
+            would_auto_include=would_auto_include,
+        )
     except ContextTargetError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Context preview failed for target %s", req.targetKey)
         raise HTTPException(status_code=500, detail=f"Context preview failed: {e}")
+
+
+def _compute_would_auto_include(
+    suggestions: list[dict[str, Any]],
+    user_paths: set[str],
+    max_auto: int,
+    min_score: int,
+) -> list[dict[str, Any]]:
+    """Dry-run computation of which scout files would be auto-included."""
+    result: list[dict[str, Any]] = []
+    for sug in suggestions:
+        if len(result) >= max_auto:
+            break
+        if sug["score"] < min_score:
+            continue
+        if sug["path"] in user_paths:
+            continue
+        result.append({
+            "path": sug["path"],
+            "score": sug["score"],
+            "reasons": sug.get("reasons", []),
+            "source": "scout_auto_selected",
+        })
+    return result
 
 
 @app.get("/api/maw/targets/{targetKey}/files")

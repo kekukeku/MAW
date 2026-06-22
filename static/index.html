@@ -119,6 +119,7 @@
     .preview-content th { color: var(--accent); }
     .preview-content pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; overflow-x: auto; }
     .file-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: rgba(59,130,246,0.15); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); border-radius: 12px; padding: 2px 8px; margin: 2px 4px 2px 0; white-space: nowrap; }
+    .file-chip.file-chip-auto { background: rgba(147,51,234,0.15); color: #c084fc; border-color: rgba(147,51,234,0.35); }
     .file-chip-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
     .file-chip-remove:hover { color: var(--err); }
     .file-selector-list { max-height: 350px; overflow-y: auto; font-size: 12px; }
@@ -277,6 +278,12 @@
       </div>
       <div id="selected-files-chips" style="min-height:0;margin-top:4px;"></div>
       <div style="font-size:11px;margin-top:2px;"><a onclick="openFileSelector(); return false;">[+ 選擇檔案]</a></div>
+      <div style="margin-top:4px;">
+        <label class="checkbox-label" title="自動納入 Scout 推薦分數最高的檔案（最多 3 份）">
+          <input type="checkbox" id="auto-include-scout" onchange="onAutoIncludeToggle()"> 自動納入最相關的推薦背景 (最大 3 份檔案)
+        </label>
+        <span id="auto-include-hint" style="font-size:10px;color:var(--warn);margin-left:4px;display:none;">請先點擊預覽以產生背景分析</span>
+      </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
         <div>
@@ -716,11 +723,18 @@
       setTimeout(() => {
         document.getElementById('council-models')?.addEventListener('change', updateCostHint);
       }, 100);
+      // Restore auto-include preference.
+      const aiCb = document.getElementById('auto-include-scout');
+      if (aiCb) {
+        aiCb.checked = loadAutoIncludePref();
+        onAutoIncludeToggle();
+      }
       const targetSel = document.getElementById('target-key');
       if (targetSel) {
         targetSel.addEventListener('change', () => {
           checkStaleAndCleanup();
           refreshContextBarIfPreviewed();
+          refreshAutoIncludeHint();
         });
       }
       const promptEl = document.getElementById('prompt');
@@ -728,12 +742,14 @@
         promptEl.addEventListener('input', () => {
           checkStaleAndCleanup();
           refreshContextBarIfPreviewed();
+          refreshAutoIncludeHint();
         });
       }
     });
 
     async function startCouncil() {
       checkStaleAndCleanup();
+      if (!startCouncilGuard()) return;
       const prompt = document.getElementById('prompt').value.trim();
       if (!prompt) return alert('請填寫任務需求');
       const models = selectedModels();
@@ -753,6 +769,10 @@
           auto_approve_council: document.getElementById('auto-approve-council').checked,
         },
         contextFiles: selectedContextFiles.length ? selectedContextFiles : undefined,
+        autoIncludeScoutFiles: document.getElementById('auto-include-scout')?.checked || false,
+        maxAutoScoutFiles: 3,
+        minScoutScore: 40,
+        scoutPreviewKey: lastPreviewKey.targetKey ? { targetKey: lastPreviewKey.targetKey, prompt: lastPreviewKey.prompt } : undefined,
       };
       if (config.mockMode) body.mock = true;
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -998,9 +1018,10 @@
         container.innerHTML = '';
         return;
       }
+      const autoPaths = getAutoIncludedPaths();
       let html = '';
       selectedContextFiles.forEach(p => {
-        html += `<span class="file-chip">${escapeHtml(p)}<button class="file-chip-remove" onclick="toggleFileSelection('${escapeHtml(p)}', false);filterFileSelector();void 0;">✕</button></span>`;
+        html += renderChipHtml(p, autoPaths.has(p));
       });
       container.innerHTML = html;
     }
@@ -1124,6 +1145,79 @@
       return labels[code] || code;
     }
 
+    // --- Phase 6e-C: auto-include scout files UI ---
+
+    function loadAutoIncludePref() {
+      try {
+        const v = localStorage.getItem('maw_auto_include_scout');
+        return v === 'true';
+      } catch (e) { return false; }
+    }
+
+    function saveAutoIncludePref(val) {
+      try { localStorage.setItem('maw_auto_include_scout', String(val)); } catch (e) {}
+    }
+
+    function onAutoIncludeToggle() {
+      const cb = document.getElementById('auto-include-scout');
+      const hint = document.getElementById('auto-include-hint');
+      saveAutoIncludePref(cb.checked);
+      if (cb.checked) {
+        // Require preview before Start.
+        if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
+          hint.style.display = 'inline';
+        } else {
+          hint.style.display = 'none';
+        }
+      } else {
+        hint.style.display = 'none';
+      }
+    }
+
+    function refreshAutoIncludeHint() {
+      const cb = document.getElementById('auto-include-scout');
+      const hint = document.getElementById('auto-include-hint');
+      if (cb && cb.checked) {
+        if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
+          hint.style.display = 'inline';
+          hint.textContent = '請先點擊預覽以產生背景分析';
+        } else if (lastPreviewKey.targetKey !== (document.getElementById('target-key')?.value || '') ||
+                   lastPreviewKey.prompt !== (document.getElementById('prompt')?.value || '')) {
+          hint.style.display = 'inline';
+          hint.textContent = '建議已過期，請重新預覽';
+        } else {
+          hint.style.display = 'none';
+        }
+      }
+    }
+
+    function renderChipHtml(path, isAuto) {
+      const cls = isAuto ? 'file-chip file-chip-auto' : 'file-chip';
+      return `<span class="${cls}">${escapeHtml(path)}<button class="file-chip-remove" onclick="toggleFileSelection('${escapeHtml(path)}', false);filterFileSelector();void 0;">✕</button></span>`;
+    }
+
+    function getAutoIncludedPaths() {
+      if (!lastContextPack || !lastContextPack.wouldAutoInclude) return new Set();
+      return new Set(lastContextPack.wouldAutoInclude.map(s => s.path));
+    }
+
+    function startCouncilGuard() {
+      const cb = document.getElementById('auto-include-scout');
+      if (!cb || !cb.checked) return true;
+      // Must have previewed first and not stale.
+      const ct = document.getElementById('target-key')?.value || '';
+      const cp = document.getElementById('prompt')?.value || '';
+      if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) {
+        alert('請先點擊 [預覽 Context] 以產生背景分析，再啟用自動納入功能。');
+        return false;
+      }
+      if (lastPreviewKey.targetKey !== ct || lastPreviewKey.prompt !== cp) {
+        alert('Scout 建議已過期（專案或需求已變更），請重新點擊 [預覽 Context]。');
+        return false;
+      }
+      return true;
+    }
+
     function renderContextPreviewContent(pack) {
       if (!pack) return '<p class="preview-empty">無可用背景資訊。</p>';
       const files = pack.files || [];
@@ -1228,6 +1322,7 @@
         lastContextPack = preview;
         lastPreviewKey = { targetKey: current.targetKey, prompt: current.prompt };
         renderContextBar(preview);
+        refreshAutoIncludeHint();
         openContextPreview();
       } catch (e) {
         bar.className = 'context-bar error';

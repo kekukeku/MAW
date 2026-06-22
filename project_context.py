@@ -22,6 +22,7 @@ from typing import Any
 
 from export import load_targets
 from maw_paths import get_project_root
+from scout import scout_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -600,20 +601,22 @@ def build_context_pack(
     context_files: list[str] | None = None,
     auto_scout: bool = False,
     policy: dict[str, Any] | None = None,
+    auto_include_scout: bool = False,
+    max_auto_scout: int = 3,
+    min_scout_score: int = 40,
+    scout_preview_key: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a context pack for the given target project.
 
     L0: Project Blueprint (tree, README, dependency files) always produced.
     L1: If context_files is non-empty, user-selected files are read and added.
+    Auto-include: if auto_include_scout=True, top-scored scout suggestions
+    are added as scout_auto_selected after passing G1-G9 safety gates.
 
     Raises:
         ContextTargetError: if target_key is unknown or target path is invalid.
-
-    Per-file L1 failures (bad path, secret, gitignored, etc.) are recorded in
-    accessIssues and do not abort the pack; L0 blueprint is still produced.
     """
     context_files = context_files or []
-    auto_scout = False  # Scout not implemented.
     effective_policy = {**DEFAULT_POLICY, **(policy or {})}
 
     targets = load_targets()
@@ -646,33 +649,95 @@ def build_context_pack(
 
     # --- L1 user-selected context files ---
     l1_files: list[dict[str, Any]] = []
-    l1_file_issues: list[str] = []
     for rel_path in context_files:
         try:
             abs_path = _validate_context_file_path(rel_path, root)
             file_record = _read_l1_file(abs_path, rel_path, root, effective_policy)
+            file_record["selectionMethod"] = "manual"
             l1_files.append(file_record)
         except ContextTargetError as e:
-            l1_file_issues.append(str(e))
             access_issues.append({"path": rel_path, "reason": f"l1_rejected: {e}"})
+
+    # --- L2 scout auto-include (G1-G9) ---
+    auto_files: list[dict[str, Any]] = []
+    user_selected_paths = {f["path"] for f in l1_files}
+    if auto_include_scout and prompt.strip():
+        # G3: verify scoutPreviewKey matches current request.
+        preview_key_ok = True
+        if scout_preview_key:
+            preview_key_ok = (
+                scout_preview_key.get("targetKey") == target_key
+                and scout_preview_key.get("prompt") == prompt
+            )
+        if not preview_key_ok:
+            access_issues.append({
+                "path": "<scout_auto>",
+                "reason": "scout_auto_skipped:stale_preview",
+            })
+        else:
+            try:
+                suggestions = scout_suggestions(target_key, prompt, max_results=max_auto_scout * 3)
+            except Exception:
+                access_issues.append({
+                    "path": "<scout_auto>",
+                    "reason": "scout_auto_skipped:suggestions_failed",
+                })
+                suggestions = []
+
+            safe_paths = {f["path"] for f in suggestions}
+            added = 0
+            for sug in suggestions:
+                if added >= max_auto_scout:
+                    access_issues.append({
+                        "path": "<scout_auto>",
+                        "reason": f"scout_auto_truncated:max_{max_auto_scout}",
+                    })
+                    break
+
+                # G7: score threshold.
+                if sug["score"] < min_scout_score:
+                    continue
+
+                # G5: file must be in safe file list (already enforced by scout_suggestions).
+                # G6: path safety + not secret/binary/gitignored.
+                try:
+                    abs_path = _validate_context_file_path(sug["path"], root)
+                    file_record = _read_l1_file(abs_path, sug["path"], root, effective_policy)
+                except ContextTargetError as e:
+                    access_issues.append({"path": sug["path"], "reason": f"scout_auto_rejected: {e}"})
+                    continue
+
+                # G8: dedup — user-selected takes priority.
+                if sug["path"] in user_selected_paths:
+                    continue
+
+                file_record["source"] = "scout_auto_selected"
+                file_record["reason"] = "Scout auto-selected"
+                file_record["selectionMethod"] = "auto_include"
+                file_record["scoutScore"] = sug["score"]
+                file_record["scoutReasons"] = sug.get("reasons", [])
+                auto_files.append(file_record)
+                added += 1
+
+    all_l1 = l1_files + auto_files
 
     # Compute included file count and truncation.
     included_files = 0
     if readme_record:
         included_files += 1
     included_files += len(dependency_records)
-    included_files += len(l1_files)
+    included_files += len(all_l1)
 
     total_chars = len(tree) + (len(readme_text) if readme_text else 0)
     for rec in dependency_records:
         total_chars += len(rec.get("content", ""))
-    for rec in l1_files:
+    for rec in all_l1:
         total_chars += len(rec.get("content", ""))
 
     truncated = any(
         issue.get("reason", "").startswith("truncated") for issue in access_issues
     )
-    for rec in l1_files:
+    for rec in all_l1:
         if rec.get("truncated"):
             truncated = True
 
@@ -682,7 +747,7 @@ def build_context_pack(
     }
     blueprint["dependencies"] = dependency_records
 
-    context_level = "L1" if l1_files else "L0"
+    context_level = "L1" if all_l1 else "L0"
 
     summary = {
         "status": "ready",
@@ -701,7 +766,7 @@ def build_context_pack(
         "policy": effective_policy,
         "summary": summary,
         "blueprint": blueprint,
-        "files": l1_files,
+        "files": all_l1,
         "accessIssues": access_issues,
     }
 
@@ -764,14 +829,52 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
     # ---- P2: Selected / Scout Files (highest priority) ----
     l1_str = ""
     files = context_pack.get("files", [])
-    if files:
-        l1_parts = ["## Selected / Scout Files", ""]
-        for f in files:
+    user_files = [f for f in files if f.get("source") != "scout_auto_selected"]
+    auto_files_selected = [f for f in files if f.get("source") == "scout_auto_selected"]
+
+    if user_files:
+        l1_parts = ["## Selected / Scout Files", "", "### User-Selected Files", ""]
+        for f in user_files:
             path = f.get("path", "")
             source = f.get("source", "")
             content = f.get("content", "")
+            sel_method = f.get("selectionMethod", "")
+            method_tag = f" (via {sel_method})" if sel_method else ""
             l1_parts.extend([
-                f"### File: {path} (source: {source})",
+                f"#### File: {path} (source: {source}{method_tag})",
+                "```text",
+                content,
+                "```",
+                "",
+            ])
+        if auto_files_selected:
+            l1_parts.extend(["### Scout Auto-Selected Files", ""])
+            for f in auto_files_selected:
+                path = f.get("path", "")
+                score = f.get("scoutScore", 0)
+                reasons = ", ".join(f.get("scoutReasons", []))
+                content = f.get("content", "")
+                l1_parts.extend([
+                    f"#### File: {path} (source: scout_auto_selected, score: {score})",
+                    f"- Reasons: {reasons}",
+                    "- Instruction: This file was automatically included by the system. Refer to it for context, but do not change it unless requested.",
+                    "```text",
+                    content,
+                    "```",
+                    "",
+                ])
+        l1_str = "\n".join(l1_parts)
+    elif auto_files_selected:
+        l1_parts = ["## Selected / Scout Files", "", "### Scout Auto-Selected Files", ""]
+        for f in auto_files_selected:
+            path = f.get("path", "")
+            score = f.get("scoutScore", 0)
+            reasons = ", ".join(f.get("scoutReasons", []))
+            content = f.get("content", "")
+            l1_parts.extend([
+                f"#### File: {path} (source: scout_auto_selected, score: {score})",
+                f"- Reasons: {reasons}",
+                "- Instruction: This file was automatically included by the system.",
                 "```text",
                 content,
                 "```",
@@ -923,6 +1026,7 @@ def compact_context_digest(context_pack: dict[str, Any]) -> str:
 def build_context_preview_response(
     context_pack: dict[str, Any],
     suggested_files: list[dict[str, Any]] | None = None,
+    would_auto_include: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a slim, UI-safe preview of a context pack.
 
@@ -992,4 +1096,6 @@ def build_context_preview_response(
             }
             for s in suggested_files
         ]
+    if would_auto_include is not None:
+        result["wouldAutoInclude"] = would_auto_include
     return result

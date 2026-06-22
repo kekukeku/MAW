@@ -441,6 +441,90 @@ class TestProjectContext(unittest.TestCase):
                 "Should have a specific label after the colon",
             )
 
+    # ---- Phase 6e-C: auto-include scout files ----
+
+    def _patch_scout_suggestions(self, suggestions):
+        return patch.object(pc, "scout_suggestions", return_value=suggestions)
+
+    def test_default_no_auto_include(self):
+        """auto_include_scout=False by default: no scout files injected."""
+        (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=[{
+            "path": "src/auth.py", "score": 100, "reasons": ["filename_match"], "size": 20, "kind": "py",
+        }]):
+            pack = pc.build_context_pack("test", "Fix auth.py")
+        self.assertFalse(any(f.get("source") == "scout_auto_selected" for f in pack["files"]))
+
+    def test_auto_include_success(self):
+        """High-score live scout files are auto-included as scout_auto_selected."""
+        (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
+        suggestions = [{"path": "src/auth.py", "score": 125, "reasons": ["filename_match", "content_match:2kws"], "size": 200, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack("test", "Fix auth.py", auto_include_scout=True, min_scout_score=40)
+        auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
+        self.assertEqual(len(auto), 1)
+        self.assertEqual(auto[0]["path"], "src/auth.py")
+        self.assertEqual(auto[0]["selectionMethod"], "auto_include")
+        self.assertEqual(auto[0]["scoutScore"], 125)
+        self.assertIn("filename_match", auto[0]["scoutReasons"])
+
+    def test_auto_include_dedup_with_user_selected(self):
+        """User-selected files take priority over auto-include (G8)."""
+        (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
+        suggestions = [{"path": "src/auth.py", "score": 100, "reasons": ["filename_match"], "size": 20, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack("test", "Fix auth.py", context_files=["src/auth.py"], auto_include_scout=True)
+        # Only one entry, source should be user_selected (manual), not scout_auto_selected.
+        self.assertEqual(len(pack["files"]), 1)
+        self.assertEqual(pack["files"][0]["source"], "user_selected")
+        self.assertEqual(pack["files"][0]["selectionMethod"], "manual")
+
+    def test_auto_include_exclude_stale_preview_key(self):
+        """G3: stale scoutPreviewKey → auto_include skipped."""
+        (self.target_root / "src" / "x.py").write_text("x", encoding="utf-8")
+        suggestions = [{"path": "src/x.py", "score": 100, "reasons": ["filename_match"], "size": 2, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack(
+                "test", "Fix x.py", auto_include_scout=True,
+                scout_preview_key={"targetKey": "other", "prompt": "old"},
+            )
+        auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
+        self.assertEqual(len(auto), 0)
+        self.assertTrue(any("stale_preview" in i.get("reason", "") for i in pack["accessIssues"]))
+
+    def test_auto_include_score_threshold(self):
+        """G7: files below min_scout_score are not auto-included."""
+        (self.target_root / "src" / "low.py").write_text("low", encoding="utf-8")
+        suggestions = [{"path": "src/low.py", "score": 30, "reasons": ["keyword"], "size": 4, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack("test", "Fix low", auto_include_scout=True, min_scout_score=50)
+        self.assertEqual(len(pack["files"]), 0)
+
+    def test_auto_include_max_cap(self):
+        """G9: maxAutoScoutFiles caps the number of auto-included files."""
+        for i in range(5):
+            (self.target_root / "src" / f"file{i}.py").write_text(f"f{i}", encoding="utf-8")
+        suggestions = [
+            {"path": f"src/file{i}.py", "score": 100, "reasons": ["match"], "size": 2, "kind": "py"}
+            for i in range(5)
+        ]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack("test", "Fix files", auto_include_scout=True, max_auto_scout=2)
+        auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
+        self.assertLessEqual(len(auto), 2)
+
+    def test_auto_include_live_key_passes(self):
+        """G3: when scoutPreviewKey matches, auto-include proceeds."""
+        (self.target_root / "src" / "auth.py").write_text("def auth(): pass", encoding="utf-8")
+        suggestions = [{"path": "src/auth.py", "score": 100, "reasons": ["match"], "size": 20, "kind": "py"}]
+        with self._load_targets_patch(), patch("project_context.scout_suggestions", return_value=suggestions):
+            pack = pc.build_context_pack(
+                "test", "Fix auth.py", auto_include_scout=True,
+                scout_preview_key={"targetKey": "test", "prompt": "Fix auth.py"},
+            )
+        auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
+        self.assertEqual(len(auto), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

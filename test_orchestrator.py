@@ -343,6 +343,71 @@ class TestOrchestrator(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_has_scout_auto_selected_detects_files(self):
+        self.assertTrue(self.orch._has_scout_auto_selected({
+            "files": [{"source": "user_selected"}, {"source": "scout_auto_selected"}],
+        }))
+        self.assertFalse(self.orch._has_scout_auto_selected({
+            "files": [{"source": "user_selected"}],
+        }))
+        self.assertFalse(self.orch._has_scout_auto_selected(None))
+
+    def test_auto_approve_demoted_by_scout_auto(self):
+        """G10: auto-approve blocked when scout_auto_selected files present."""
+        async def _run():
+            with self._targets_patch(), patch.object(orch_mod, "build_context_pack", return_value={
+                "version": 1, "targetKey": "test", "level": "L1",
+                "summary": {"status": "ready", "includedFiles": 2, "totalChars": 100, "truncated": False},
+                "blueprint": {"tree": "t", "readme": "", "dependencies": []},
+                "files": [{"path": "src/a.py", "source": "scout_auto_selected", "selectionMethod": "auto_include"}],
+                "accessIssues": [],
+            }), patch.object(orch_mod, "run_council", return_value={
+                "id": "conv_001", "messages": [{"role": "assistant", "content": "test", "stage1": [], "stage2": [], "stage3": {"response": "test"}, "metadata": {}}],
+            }):
+                wf = await self.orch.start_council(
+                    prompt="Implement feature X", target_key="test",
+                    review_policy={"auto_approve_council": True, "allow_l0_auto_approve": False},
+                    auto_include_scout=True, mock=True,
+                )
+                await asyncio.sleep(0.5)
+                conv_id = "conv_001"
+                wf2 = self.orch.get_workflow_by_conversation(conv_id)
+                self.assertIsNotNone(wf2, f"Workflow not found for conversation {conv_id}")
+                self.assertEqual(wf2["state"], WorkflowState.COUNCIL_PENDING_APPROVAL.value,
+                                 f"Expected COUNCIL_PENDING_APPROVAL, got {wf2['state']}")
+
+        asyncio.run(_run())
+
+    def test_allow_scout_auto_approve_enabled(self):
+        """G10: when allow_scout_auto_approve=True, auto-approve proceeds."""
+        async def _run():
+            with self._targets_patch(), patch.object(orch_mod, "build_context_pack", return_value={
+                "version": 1, "targetKey": "test", "level": "L1",
+                "summary": {"status": "ready", "includedFiles": 2, "totalChars": 100, "truncated": False},
+                "blueprint": {"tree": "t", "readme": "", "dependencies": []},
+                "files": [{"path": "src/a.py", "source": "scout_auto_selected", "selectionMethod": "auto_include"}],
+                "accessIssues": [],
+            }), patch.object(orch_mod, "run_council", return_value={
+                "id": "conv_002", "messages": [{"role": "assistant", "content": "test", "stage1": [], "stage2": [], "stage3": {"response": "test"}, "metadata": {}}],
+            }):
+                wf = await self.orch.start_council(
+                    prompt="Implement feature Y", target_key="test",
+                    review_policy={
+                        "auto_approve_council": True,
+                        "allow_l0_auto_approve": True,
+                        "allow_scout_auto_approve": True,
+                    },
+                    auto_include_scout=True, mock=True,
+                )
+                await asyncio.sleep(0.5)
+                conv_id = "conv_002"
+                wf2 = self.orch.get_workflow_by_conversation(conv_id)
+                self.assertIsNotNone(wf2, f"Workflow not found for conversation {conv_id}")
+                self.assertNotEqual(wf2["state"], WorkflowState.COUNCIL_PENDING_APPROVAL.value,
+                                    f"Expected auto-approve to skip gate #1, but state is {wf2['state']}")
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()
