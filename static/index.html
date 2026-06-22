@@ -716,12 +716,18 @@
       setTimeout(() => {
         document.getElementById('council-models')?.addEventListener('change', updateCostHint);
       }, 100);
-      // Target change: cleanup cross-target stale state.
       const targetSel = document.getElementById('target-key');
       if (targetSel) {
         targetSel.addEventListener('change', () => {
           checkStaleAndCleanup();
-          markSuggestionsStale();
+          refreshContextBarIfPreviewed();
+        });
+      }
+      const promptEl = document.getElementById('prompt');
+      if (promptEl) {
+        promptEl.addEventListener('input', () => {
+          checkStaleAndCleanup();
+          refreshContextBarIfPreviewed();
         });
       }
     });
@@ -795,14 +801,39 @@
     let availableFilesCache = null;
     let lastPreviewKey = { targetKey: '', prompt: '' };
 
+    function getCurrentPreviewContext() {
+      return {
+        targetKey: document.getElementById('target-key')?.value || '',
+        prompt: (document.getElementById('prompt')?.value || '').trim(),
+      };
+    }
+
+    function areSuggestionsLive() {
+      if (!lastPreviewKey.targetKey || !lastPreviewKey.prompt) return false;
+      const current = getCurrentPreviewContext();
+      return lastPreviewKey.targetKey === current.targetKey
+        && lastPreviewKey.prompt === current.prompt;
+    }
+
+    function getCachedSuggestions() {
+      const sf = lastContextPack?.suggestedFiles;
+      return sf && sf.length ? sf : null;
+    }
+
+    function getLiveSuggestions() {
+      if (!areSuggestionsLive()) return null;
+      return getCachedSuggestions();
+    }
+
+    function refreshContextBarIfPreviewed() {
+      if (lastContextPack) renderContextBar(lastContextPack);
+    }
+
     function checkStaleAndCleanup() {
-      const currentTarget = document.getElementById('target-key')?.value || '';
-      const currentPrompt = document.getElementById('prompt')?.value || '';
-      const targetChanged = lastPreviewKey.targetKey && lastPreviewKey.targetKey !== currentTarget;
-      const promptChanged = lastPreviewKey.prompt && lastPreviewKey.prompt !== currentPrompt;
+      const current = getCurrentPreviewContext();
+      const targetChanged = lastPreviewKey.targetKey && lastPreviewKey.targetKey !== current.targetKey;
 
       if (targetChanged) {
-        // Cross-target: clear everything.
         selectedContextFiles = [];
         availableFilesCache = null;
         if (lastContextPack && lastContextPack.suggestedFiles) {
@@ -810,21 +841,6 @@
         }
         lastPreviewKey = { targetKey: '', prompt: '' };
         renderSelectedFileChips();
-      } else if (promptChanged) {
-        // Same target, different prompt: keep selected chips, but suggestions are stale.
-        // We'll mark them in the UI.
-      }
-    }
-
-    function markSuggestionsStale() {
-      const bar = document.getElementById('context-bar');
-      if (bar && lastContextPack && lastContextPack.suggestedFiles && lastContextPack.suggestedFiles.length) {
-        const currentTarget = document.getElementById('target-key')?.value || '';
-        const currentPrompt = document.getElementById('prompt')?.value || '';
-        if (lastPreviewKey.targetKey !== currentTarget || lastPreviewKey.prompt !== currentPrompt) {
-          bar.className = 'context-bar warning';
-          bar.innerHTML = bar.innerHTML.replace(/Scout 推薦 \d+ 個檔案/g, 'Scout 建議已過期，請重新預覽');
-        }
       }
     }
 
@@ -848,21 +864,10 @@
           files = await res.json();
           availableFilesCache = { targetKey, files };
         }
-        const suggested = getLiveSuggestions();
-        renderFileSelectorList(files, suggested);
+        renderFileSelectorList(files, getCachedSuggestions());
       } catch (e) {
         list.innerHTML = '<p style="color:var(--err);padding:12px;">網路錯誤</p>';
       }
-    }
-
-    function getLiveSuggestions() {
-      if (!lastContextPack || !lastContextPack.suggestedFiles) return null;
-      const currentTarget = document.getElementById('target-key')?.value || '';
-      const currentPrompt = document.getElementById('prompt')?.value || '';
-      if (lastPreviewKey.targetKey !== currentTarget || lastPreviewKey.prompt !== currentPrompt) {
-        return null; // Stale — don't show outdated suggestions.
-      }
-      return lastContextPack.suggestedFiles;
     }
 
     function addSuggestedFiles() {
@@ -875,12 +880,12 @@
       }
       renderSelectedFileChips();
       if (availableFilesCache && availableFilesCache.files) {
-        renderFileSelectorList(availableFilesCache.files, sf);
+        renderFileSelectorList(availableFilesCache.files, getCachedSuggestions());
       }
     }
 
     function clearSuggestedSelections() {
-      const sf = getLiveSuggestions();
+      const sf = getCachedSuggestions();
       if (!sf) return;
       const sugPaths = new Set(sf.map(s => s.path));
       selectedContextFiles = selectedContextFiles.filter(p => !sugPaths.has(p));
@@ -905,29 +910,34 @@
 
       // --- Suggested files section (always visible at top, never filtered) ---
       if (suggested && suggested.length) {
-        const isStale = !getLiveSuggestions();
+        const isStale = !areSuggestionsLive();
         const sugLabel = isStale
           ? '⚠ Scout 建議已過期（請重新預覽）'
           : '⭐ 推薦檔案 (Scout)';
-        const sugOpacity = isStale ? 'opacity:0.5;' : '';
+        const sugOpacity = isStale ? 'opacity:0.65;' : '';
         html += `<div style="font-weight:600;color:${isStale ? 'var(--warn)' : 'var(--accent)'};margin-bottom:4px;font-size:12px;${sugOpacity}">${sugLabel}</div>`;
         const sugPaths = new Set(suggested.map(s => s.path));
-        if (!isStale) {
-          for (const s of suggested) {
-            const checked = selected.has(s.path) ? 'checked' : '';
-            const scorePct = Math.min(100, Math.round(s.score * 100 / 200));
-            const reasonsShort = (s.reasons || []).slice(0, 2).join(', ');
-            html += `<label class="file-selector-row${checked ? ' file-selector-row-selected' : ''}" style="background:rgba(59,130,246,0.06);">
-              <input type="checkbox" value="${escapeHtml(s.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(s.path)}', this.checked)">
-              <span class="file-selector-path">${escapeHtml(s.path)}</span>
-              <span class="file-selector-meta" title="${escapeHtml(reasonsShort)}">score:${scorePct}%</span>
-            </label>`;
-            count++;
-          }
+        for (const s of suggested) {
+          const checked = selected.has(s.path) ? 'checked' : '';
+          const scorePct = Math.min(100, Math.round(s.score * 100 / 200));
+          const reasonsShort = (s.reasons || []).slice(0, 2).join(', ');
+          const sizeKb = s.size ? ` · ${(s.size / 1024).toFixed(1)} KB` : '';
+          const kindLabel = s.kind ? s.kind.toUpperCase() : '';
+          const rowStyle = `background:rgba(59,130,246,0.06);${isStale ? 'opacity:0.65;' : ''}`;
+          const disabled = isStale ? 'disabled' : '';
+          html += `<label class="file-selector-row${checked ? ' file-selector-row-selected' : ''}" style="${rowStyle}">
+            <input type="checkbox" value="${escapeHtml(s.path)}" ${checked} ${disabled} onchange="toggleFileSelection('${escapeHtml(s.path)}', this.checked)">
+            <span class="file-selector-path">${escapeHtml(s.path)}</span>
+            <span class="file-selector-meta" title="${escapeHtml(reasonsShort)}">score:${scorePct}%${sizeKb} · ${escapeHtml(kindLabel || '?')}</span>
+          </label>`;
+          count++;
         }
+        const hasSelectedFromSuggestions = suggested.some(s => selected.has(s.path));
         html += '<div style="margin:4px 0;display:flex;gap:8px;">'
           + (isStale ? '' : `<button class="btn btn-primary" style="font-size:10px;padding:2px 10px;border-radius:4px;" onclick="addSuggestedFiles()">+ 全部加入</button>`)
-          + `<button class="btn btn-secondary" style="font-size:10px;padding:2px 10px;border-radius:4px;" onclick="clearSuggestedSelections()">清除 Scout 選取</button>`
+          + (hasSelectedFromSuggestions
+            ? `<button class="btn btn-secondary" style="font-size:10px;padding:2px 10px;border-radius:4px;" onclick="clearSuggestedSelections()">清除 Scout 選取</button>`
+            : '')
           + '</div>';
         html += '<div style="font-weight:600;color:var(--muted);margin:8px 0 4px;font-size:12px;border-top:1px solid var(--border);padding-top:8px;">📁 所有檔案</div>';
         // Show non-suggested files (search-filterable).
@@ -968,7 +978,7 @@
 
     function filterFileSelector() {
       if (availableFilesCache?.files) {
-        renderFileSelectorList(availableFilesCache.files, getLiveSuggestions());
+        renderFileSelectorList(availableFilesCache.files, getCachedSuggestions());
       }
     }
 
@@ -1022,10 +1032,7 @@
       }
 
       const suggested = pack.suggestedFiles || [];
-      const currentTarget = document.getElementById('target-key')?.value || '';
-      const currentPrompt = document.getElementById('prompt')?.value || '';
-      const isStale = lastPreviewKey.targetKey && lastPreviewKey.prompt &&
-        (lastPreviewKey.targetKey !== currentTarget || lastPreviewKey.prompt !== currentPrompt);
+      const isStale = suggested.length > 0 && !areSuggestionsLive();
       const scoutHint = suggested.length
         ? (isStale ? ' · ⚠ Scout 建議已過期，請重新預覽' : ` · Scout 推薦 ${suggested.length} 個檔案`)
         : '';
@@ -1201,11 +1208,10 @@
       const bar = document.getElementById('context-bar');
       bar.className = 'context-bar scanning';
       bar.textContent = '專案感知背景: 掃描中...';
-      const currentTarget = document.getElementById('target-key').value;
-      const currentPrompt = document.getElementById('prompt').value;
+      const current = getCurrentPreviewContext();
       const body = {
-        targetKey: currentTarget,
-        prompt: currentPrompt,
+        targetKey: current.targetKey,
+        prompt: current.prompt,
         contextFiles: selectedContextFiles.length ? selectedContextFiles : undefined,
         autoScoutContext: true,
       };
@@ -1220,7 +1226,7 @@
         }
         const preview = await res.json();
         lastContextPack = preview;
-        lastPreviewKey = { targetKey: currentTarget, prompt: currentPrompt };
+        lastPreviewKey = { targetKey: current.targetKey, prompt: current.prompt };
         renderContextBar(preview);
         openContextPreview();
       } catch (e) {
