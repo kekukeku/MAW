@@ -1043,7 +1043,7 @@ Phase 6c+:
 
 ### Phase 6f - Explorer Brief Prototype
 
-**狀態**：規劃完成，待實作。前置：6a L0、6d L1、6e Scout + auto-include（含 preview key、provenance、G10 auto-approve guard）均已落地。
+**狀態**：已落地 / 已驗收。前置：6a L0、6d L1、6e Scout + auto-include（含 preview key、provenance、G10 auto-approve guard）均已落地。
 
 #### 6f.0 建議是否做
 
@@ -1051,7 +1051,7 @@ Phase 6c+:
 
 - Scout 解決「推薦哪些檔」；Explorer 補「區域地圖 + 證據鏈」敘事 brief。
 - 唯讀、無 target 寫入，與 Executor 邊界清晰。
-- **不做全功能 agent**：MVP = deterministic read/search + template summary，**不呼叫 LLM**，**不跑 subprocess**（`rg` 列為 6f+ optional）。
+- **不做全功能 agent**：MVP = deterministic read/search + template summary，**不呼叫 LLM**。`rg`（ripgrep）是 6f MVP **optional read-only acceleration**（`_detect_rg()` 偵測，有則加速、無則純 Python `os.walk` + `re.search` fallback，非硬依賴）。
 
 #### 6f.1 Explorer 定位
 
@@ -1080,7 +1080,7 @@ Start Council     →  generateExplorerBrief: true 時必帶 explorerPreviewKey 
 Stale             →  target/prompt 變更 → brief 作廢，需重新 preview
 ```
 
-MVP 可先只做 preview；Start 阻擋 guard（無 preview / stale）可於 6f-D 對齊 6e-C UX。
+Start 阻擋 guard（無 preview key / stale）已於 6f-D 實作完畢，對齊 6e-C G3。
 
 #### 6f.3 唯讀命令白名單
 
@@ -1090,7 +1090,7 @@ MVP 可先只做 preview；Start 阻擋 guard（無 preview / stale）可於 6f-
 ExplorerOp = Literal[
     "list_files",      # 重用 list_safe_files / _collect_candidate_files
     "read_file",       # 重用 _read_l1_file + path validation
-    "search_text",     # 純 Python walk + regex（MVP）
+    "search_text",     # rg（偵測加速）或純 Python walk + regex fallback
     "inspect_deps",    # package.json / pyproject.toml 等
     "find_tests",      # fnmatch *test* 鄰近 matched source
     "symbol_search",   # MVP = 文字 regex 找 def/class/export（非 AST）
@@ -1327,7 +1327,7 @@ Start Council 擴充 `NewConversationRequest`：
 6f-B  explorer preview API + API tests
 6f-C  prompt envelope + export provenance + orchestrator wire
 6f-D  UI toggle + modal + stale/key guard
-Post  6f+  rg optional, Gate #1 re-explore hint, PLANNING/ json export
+Post  6f+  Gate #1 re-explore hint, PLANNING/ json export
 ```
 
 #### 6f.14 驗收標準
