@@ -68,11 +68,16 @@ class TestContextPreviewAPI(unittest.TestCase):
         self.assertEqual(res.status_code, 500)
         self.assertIn("disk full", res.json()["detail"])
 
-    def test_preview_context_ignores_context_files_and_auto_scout(self):
-        """Phase 6c-A accepts but ignores contextFiles and autoScoutContext."""
-        with patch.object(pc, "load_targets", return_value=self.targets), patch.object(
-            main, "build_context_pack", wraps=pc.build_context_pack
-        ) as mock_build:
+    def test_preview_context_passes_context_files(self):
+        """Phase 6d-A: preview API forwards contextFiles to build_context_pack."""
+        with patch.object(main, "build_context_pack", return_value={
+            "version": 1, "targetKey": "test", "level": "L1", "summary": {"includedFiles": 1, "totalChars": 10, "truncated": False},
+            "blueprint": {"tree": "test", "readme": "", "dependencies": []}, "files": [{"path": "src/a.py", "source": "user_selected"}],
+            "accessIssues": [],
+        }) as mock_build, patch.object(main, "build_context_preview_response", return_value={
+            "version": 1, "target_key": "test", "level": "L1", "files": [{"path": "src/a.py", "source": "user_selected"}],
+            "total_tokens": 4, "warnings": [],
+        }):
             res = self.client.post(
                 "/api/maw/context/preview",
                 json={
@@ -83,7 +88,12 @@ class TestContextPreviewAPI(unittest.TestCase):
                 },
             )
         self.assertEqual(res.status_code, 200)
-        mock_build.assert_called_once_with(target_key="test", prompt="Implement feature X")
+        mock_build.assert_called_once_with(
+            target_key="test",
+            prompt="Implement feature X",
+            context_files=["src/a.py"],
+            auto_scout=False,
+        )
 
     def test_build_context_preview_response_warnings(self):
         pack = {
@@ -99,6 +109,32 @@ class TestContextPreviewAPI(unittest.TestCase):
         self.assertEqual(preview["warnings"], ["l0_only", "truncated"])
         self.assertNotIn("targetPath", preview)
         self.assertNotIn("content", preview["blueprint"])
+
+
+    def test_list_target_files_api(self):
+        with patch.object(pc, "load_targets", return_value=self.targets):
+            res = self.client.get("/api/maw/targets/test/files")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIsInstance(body, list)
+        for entry in body:
+            self.assertIn("path", entry)
+            self.assertIn("size", entry)
+            self.assertIn("kind", entry)
+            self.assertIn("mtime", entry)
+        paths = {e["path"] for e in body}
+        self.assertIn("README.md", paths)
+        self.assertIn("package.json", paths)
+
+    def test_list_target_files_unknown_target(self):
+        with patch.object(main, "list_safe_files", side_effect=ContextTargetError("unknown target")):
+            res = self.client.get("/api/maw/targets/bogus/files")
+        self.assertEqual(res.status_code, 400)
+
+    def test_list_target_files_internal_error(self):
+        with patch.object(main, "list_safe_files", side_effect=RuntimeError("disk error")):
+            res = self.client.get("/api/maw/targets/test/files")
+        self.assertEqual(res.status_code, 500)
 
 
 if __name__ == "__main__":

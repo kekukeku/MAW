@@ -21,7 +21,12 @@ from council.config import (
 )
 from council.storage import list_conversations, load_conversation
 from loop_orchestrator import orchestrator, ALLOW_AUTO_COMMIT
-from project_context import build_context_pack, build_context_preview_response, ContextTargetError
+from project_context import (
+    build_context_pack,
+    build_context_preview_response,
+    ContextTargetError,
+    list_safe_files,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -93,6 +98,8 @@ class NewConversationRequest(BaseModel):
     filesAffected: str = "To be determined by executor after repository inspection"
     nonGoals: str = "None specified."
     mock: Optional[bool] = None
+    contextFiles: Optional[List[str]] = None
+    autoScoutContext: bool = True
 
 
 class ContextPreviewRequest(BaseModel):
@@ -247,6 +254,7 @@ async def create_conversation(req: NewConversationRequest):
             files_affected=req.filesAffected,
             non_goals=req.nonGoals,
             mock=req.mock,
+            context_files=req.contextFiles,
         )
         return workflow
     except ValueError as e:
@@ -259,14 +267,14 @@ async def create_conversation(req: NewConversationRequest):
 async def preview_context(req: ContextPreviewRequest):
     """Preview target project context.
 
-    Phase 6c-A: contextFiles and autoScoutContext are accepted for schema
-    compatibility only; they are ignored because L1/L2 context selection is not
-    yet implemented.
+    Accepts contextFiles and autoScoutContext for L1/L2.
     """
     try:
         context_pack = build_context_pack(
             target_key=req.targetKey,
             prompt=req.prompt,
+            context_files=req.contextFiles,
+            auto_scout=req.autoScoutContext,
         )
         return build_context_preview_response(context_pack)
     except ContextTargetError as e:
@@ -274,6 +282,22 @@ async def preview_context(req: ContextPreviewRequest):
     except Exception as e:
         logger.exception("Context preview failed for target %s", req.targetKey)
         raise HTTPException(status_code=500, detail=f"Context preview failed: {e}")
+
+
+@app.get("/api/maw/targets/{targetKey}/files")
+async def list_target_files(targetKey: str):
+    """Return a sanitised list of files available for user selection.
+
+    Excludes .git, MAW_workflow, node_modules, secrets, binaries, gitignored files.
+    Returns path/size/kind/mtime only — no file contents.
+    """
+    try:
+        return list_safe_files(targetKey)
+    except ContextTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to list files for target %s", targetKey)
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {e}")
 
 
 @app.post("/api/maw/conversations/{conversation_id}/approve")

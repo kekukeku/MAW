@@ -291,6 +291,7 @@ class LoopOrchestrator:
         files_affected: str = "To be determined by executor after repository inspection",
         non_goals: str = "None specified.",
         mock: bool | None = None,
+        context_files: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create workflow and run council asynchronously."""
         targets = load_targets()
@@ -321,6 +322,7 @@ class LoopOrchestrator:
                 "files_affected": files_affected,
                 "non_goals": non_goals,
                 "mock": mock,
+                "context_files": context_files,
                 "review_iterations": 0,
                 "logs": [],
                 "reason": None,
@@ -391,6 +393,7 @@ class LoopOrchestrator:
                 context_pack = build_context_pack(
                     target_key=wf["target_key"],
                     prompt=wf["prompt"],
+                    context_files=wf.get("context_files"),
                 )
             except Exception as exc:
                 logger.exception("Context gathering failed for %s", wf_id)
@@ -402,7 +405,8 @@ class LoopOrchestrator:
                 wf,
                 "context",
                 f"Context pack ready: {summary.get('totalChars', 0)} chars, "
-                f"{summary.get('includedFiles', 0)} files, L0 blueprint only",
+                f"{summary.get('includedFiles', 0)} files, "
+                f"level {context_pack.get('level', 'L0')}",
             )
             for issue in context_pack.get("accessIssues", []):
                 self._append_log(wf, "context", f"Context issue: {issue.get('path')} - {issue.get('reason')}")

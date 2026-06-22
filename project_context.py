@@ -1,10 +1,12 @@
 """Target project context gathering for the MAW Context-Aware Council.
 
 Phase 6a scope:
-- L0 Project Blueprint only (tree, README, dependency files).
-- No L1/L2/L3 context sources.
-- No UI, no preview API.
+- L0 Project Blueprint (tree, README, dependency files).
 - Read-only, path-safe, secret-denylisted.
+
+Phase 6d-A scope:
+- L1 user-selected context files with full security validation.
+- list_safe_files() for the file browser API.
 """
 
 from __future__ import annotations
@@ -444,6 +446,154 @@ def _extract_scripts_summary(dep_name: str, text: str) -> str | None:
     return None
 
 
+def _validate_context_file_path(rel_path: str, root: Path) -> Path:
+    """Validate and resolve a user-selected context file path.
+
+    Returns the resolved absolute Path if valid.
+    Raises ContextTargetError on any violation.
+    """
+    if not rel_path or not rel_path.strip():
+        raise ContextTargetError("Empty file path")
+
+    rel_path = rel_path.strip()
+
+    if os.path.isabs(rel_path):
+        raise ContextTargetError(f"Rejected absolute path: {rel_path}")
+
+    if ".." in Path(rel_path).parts:
+        raise ContextTargetError(f"Rejected traversal path: {rel_path}")
+
+    raw = root / rel_path
+
+    try:
+        resolved = raw.resolve()
+    except (OSError, RuntimeError) as e:
+        raise ContextTargetError(f"Cannot resolve path {rel_path}: {e}")
+
+    root_resolved = root.resolve()
+    if not (resolved == root_resolved or root_resolved in resolved.parents):
+        raise ContextTargetError(f"Path escapes target root: {rel_path}")
+
+    if not resolved.is_file():
+        raise ContextTargetError(f"Not a regular file: {rel_path}")
+
+    return resolved
+
+
+def _read_l1_file(
+    absolute_path: Path, rel_path: str, root: Path, policy: dict[str, Any]
+) -> dict[str, Any]:
+    """Read a single L1 user-selected file with safety and budget checks.
+
+    Returns a file record dict.
+    Raises ContextTargetError for hard policy violations.
+    """
+    max_file_chars = policy.get("maxFileChars", 12000)
+
+    excluded, reason = _is_always_excluded(absolute_path, root)
+    if excluded:
+        raise ContextTargetError(f"Excluded file ({reason}): {rel_path}")
+
+    # Check gitignore.
+    if policy.get("respectGitignore", True):
+        ignored = _batch_git_ignored([absolute_path], root)
+        if absolute_path in ignored:
+            raise ContextTargetError(f"Gitignored file rejected: {rel_path}")
+
+    try:
+        with open(absolute_path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        raise ContextTargetError(f"Cannot read file {rel_path}: {e}")
+
+    if b"\x00" in raw:
+        raise ContextTargetError(f"Binary file rejected: {rel_path}")
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("latin-1")
+        except UnicodeDecodeError:
+            raise ContextTargetError(f"Unreadable encoding: {rel_path}")
+
+    content = text
+    truncated = False
+    if len(content) > max_file_chars:
+        head = max_file_chars // 2
+        tail = max_file_chars - head
+        content = (
+            text[:head]
+            + f"\n\n[... {len(text) - max_file_chars} chars omitted from {rel_path} ...]\n\n"
+            + text[-tail:]
+        )
+        truncated = True
+
+    return {
+        "path": rel_path,
+        "source": "user_selected",
+        "reason": "User selected",
+        "chars": len(content),
+        "truncated": truncated,
+        "sha256": _sha256_text(content),
+        "content": content,
+    }
+
+
+def list_safe_files(target_key: str) -> list[dict[str, Any]]:
+    """Return a sanitised list of files available for user selection.
+
+    Used by GET /api/maw/targets/{targetKey}/files.
+    Returns metadata only — no file contents.
+    """
+    targets = load_targets()
+    projects = targets.get("projects", {})
+    if target_key not in projects:
+        raise ContextTargetError(f"Unknown target key: '{target_key}'.")
+
+    target_path = projects[target_key].get("path", "")
+    root = Path(get_project_root(target_path))
+    if not root.is_dir():
+        raise ContextTargetError(f"Target directory does not exist: {root}")
+
+    candidates, _issues = _collect_candidate_files(root, DEFAULT_POLICY)
+    result: list[dict[str, Any]] = []
+    for f in candidates:
+        rel = f.relative_to(root).as_posix()
+        try:
+            st = f.stat()
+            size = st.st_size
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            size = 0
+            mtime = None
+
+        suffix = f.suffix.lower().lstrip(".")
+        kind = suffix if suffix else "unknown"
+
+        is_binary = False
+        try:
+            with open(f, "rb") as fh:
+                peek = fh.read(512)
+            if b"\x00" in peek:
+                is_binary = True
+        except OSError:
+            is_binary = True
+
+        if is_binary:
+            continue
+
+        result.append({
+            "path": rel,
+            "size": size,
+            "kind": kind,
+            "mtime": mtime,
+        })
+
+    result.sort(key=lambda x: (not x["path"].startswith(("src/", "lib/", "app/")), x["path"].lower()))
+    return result
+
+
 def build_context_pack(
     target_key: str,
     prompt: str,
@@ -451,23 +601,17 @@ def build_context_pack(
     auto_scout: bool = False,
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build an L0 Project Blueprint context pack for the given target project.
+    """Build a context pack for the given target project.
 
-    Args:
-        target_key: key into MAW targets.json.
-        prompt: the original user request (used for provenance, not for Scout in Phase 6a).
-        context_files: Phase 6a ignores this (reserved for L1 in Phase 6c+).
-        auto_scout: Phase 6a ignores this (reserved for L2 in Phase 6e+).
-        policy: optional override for context budget/policy.
-
-    Returns:
-        A context pack dict matching the schema in CONTEXT_AWARE_COUNCIL_REFACTOR_PLAN.md.
+    L0: Project Blueprint (tree, README, dependency files) always produced.
+    L1: If context_files is non-empty, user-selected files are read and added.
 
     Raises:
-        ValueError: if target_key is unknown or target path is invalid.
+        ContextTargetError: if target_key is unknown, target path is invalid,
+            or any context_file fails path-safety validation.
     """
     context_files = context_files or []
-    auto_scout = False  # Force off in Phase 6a.
+    auto_scout = False  # Scout not implemented.
     effective_policy = {**DEFAULT_POLICY, **(policy or {})}
 
     targets = load_targets()
@@ -498,25 +642,45 @@ def build_context_pack(
     dependency_records, dep_issues = _read_dependency_files(root, candidate_files, effective_policy)
     access_issues.extend(dep_issues)
 
+    # --- L1 user-selected context files ---
+    l1_files: list[dict[str, Any]] = []
+    l1_file_issues: list[str] = []
+    for rel_path in context_files:
+        try:
+            abs_path = _validate_context_file_path(rel_path, root)
+            file_record = _read_l1_file(abs_path, rel_path, root, effective_policy)
+            l1_files.append(file_record)
+        except ContextTargetError as e:
+            l1_file_issues.append(str(e))
+            access_issues.append({"path": rel_path, "reason": f"l1_rejected: {e}"})
+
     # Compute included file count and truncation.
     included_files = 0
     if readme_record:
         included_files += 1
     included_files += len(dependency_records)
+    included_files += len(l1_files)
 
     total_chars = len(tree) + (len(readme_text) if readme_text else 0)
     for rec in dependency_records:
+        total_chars += len(rec.get("content", ""))
+    for rec in l1_files:
         total_chars += len(rec.get("content", ""))
 
     truncated = any(
         issue.get("reason", "").startswith("truncated") for issue in access_issues
     )
+    for rec in l1_files:
+        if rec.get("truncated"):
+            truncated = True
 
     blueprint: dict[str, Any] = {
         "tree": tree,
         "readme": readme_text or "",
     }
     blueprint["dependencies"] = dependency_records
+
+    context_level = "L1" if l1_files else "L0"
 
     summary = {
         "status": "ready",
@@ -529,13 +693,13 @@ def build_context_pack(
     context_pack: dict[str, Any] = {
         "version": CONTEXT_PACK_VERSION,
         "targetKey": target_key,
-        "level": "L0",
+        "level": context_level,
         "targetPath": str(root),
         "generatedAt": generated_at,
         "policy": effective_policy,
         "summary": summary,
         "blueprint": blueprint,
-        "files": [],  # L1/L2 placeholder for Phase 6c+.
+        "files": l1_files,
         "accessIssues": access_issues,
     }
 

@@ -118,6 +118,16 @@
     .preview-content th, .preview-content td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
     .preview-content th { color: var(--accent); }
     .preview-content pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; overflow-x: auto; }
+    .file-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: rgba(59,130,246,0.15); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); border-radius: 12px; padding: 2px 8px; margin: 2px 4px 2px 0; white-space: nowrap; }
+    .file-chip-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
+    .file-chip-remove:hover { color: var(--err); }
+    .file-selector-list { max-height: 350px; overflow-y: auto; font-size: 12px; }
+    .file-selector-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; border-radius: 4px; }
+    .file-selector-row:hover { background: rgba(255,255,255,0.04); }
+    .file-selector-row input[type=checkbox] { margin: 0; }
+    .file-selector-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 11px; }
+    .file-selector-meta { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .file-selector-search { width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px; margin-bottom: 8px; }
     @media (max-width: 900px) { .setup-grid, .direct-keys { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -264,6 +274,8 @@
       <div id="context-bar" class="context-bar">
         專案感知背景: 尚未預覽 · <a onclick="previewContext(); return false;">[預覽 Context]</a>
       </div>
+      <div id="selected-files-chips" style="min-height:0;margin-top:4px;"></div>
+      <div style="font-size:11px;margin-top:2px;"><a onclick="openFileSelector(); return false;">[+ 選擇檔案]</a></div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
         <div>
@@ -355,6 +367,19 @@
       <div id="context-preview-content" class="preview-content"></div>
       <div class="actions">
         <button class="btn btn-secondary" onclick="closeContextPreview()">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 7: File Selector Modal -->
+  <div class="modal" id="file-selector-modal">
+    <div class="modal-box">
+      <h3>選擇背景檔案</h3>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">勾選要納入 Council 的專案檔案（唯讀、安全過濾）</p>
+      <input type="text" id="file-selector-filter" class="file-selector-search" placeholder="搜尋檔案..." oninput="filterFileSelector()">
+      <div id="file-selector-list" class="file-selector-list"></div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="closeFileSelector()">完成</button>
       </div>
     </div>
   </div>
@@ -711,6 +736,7 @@
           require_pre_commit_approval: document.getElementById('require-commit').checked,
           auto_approve_council: document.getElementById('auto-approve-council').checked,
         },
+        contextFiles: selectedContextFiles.length ? selectedContextFiles : undefined,
       };
       if (config.mockMode) body.mock = true;
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -755,6 +781,94 @@
     }
 
     let lastContextPack = null;
+    let selectedContextFiles = [];
+    let availableFilesCache = null;
+
+    async function openFileSelector() {
+      const modal = document.getElementById('file-selector-modal');
+      const list = document.getElementById('file-selector-list');
+      list.innerHTML = '<p style="color:var(--muted);padding:12px;">載入中...</p>';
+      modal.classList.add('open');
+      try {
+        const targetKey = document.getElementById('target-key').value;
+        let files = null;
+        if (availableFilesCache && availableFilesCache.targetKey === targetKey) {
+          files = availableFilesCache.files;
+        } else {
+          const res = await fetch(`${API}/api/maw/targets/${encodeURIComponent(targetKey)}/files`);
+          if (!res.ok) {
+            list.innerHTML = '<p style="color:var(--err);padding:12px;">無法載入檔案清單</p>';
+            return;
+          }
+          files = await res.json();
+          availableFilesCache = { targetKey, files };
+        }
+        renderFileSelectorList(files);
+      } catch (e) {
+        list.innerHTML = '<p style="color:var(--err);padding:12px;">網路錯誤</p>';
+      }
+    }
+
+    function renderFileSelectorList(files) {
+      const list = document.getElementById('file-selector-list');
+      if (!files || !files.length) {
+        list.innerHTML = '<p style="color:var(--muted);padding:12px;">無可選檔案</p>';
+        return;
+      }
+      const filterEl = document.getElementById('file-selector-filter');
+      const filter = (filterEl?.value || '').toLowerCase();
+      const search = filter;
+      const selected = new Set(selectedContextFiles);
+      let html = '';
+      let count = 0;
+      for (const f of files) {
+        if (search && !f.path.toLowerCase().includes(search)) continue;
+        const checked = selected.has(f.path) ? 'checked' : '';
+        const sizeKb = f.size ? ` · ${(f.size/1024).toFixed(1)} KB` : '';
+        const kindLabel = f.kind ? f.kind.toUpperCase() : '';
+        html += `<label class="file-selector-row">
+          <input type="checkbox" value="${escapeHtml(f.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(f.path)}', this.checked)">
+          <span class="file-selector-path">${escapeHtml(f.path)}</span>
+          <span class="file-selector-meta">${kindLabel}${sizeKb}</span>
+        </label>`;
+        count++;
+      }
+      if (!count) html = '<p style="color:var(--muted);padding:12px;">無符合檔案</p>';
+      list.innerHTML = html;
+    }
+
+    function filterFileSelector() {
+      if (availableFilesCache?.files) {
+        renderFileSelectorList(availableFilesCache.files);
+      }
+    }
+
+    function toggleFileSelection(path, checked) {
+      if (checked) {
+        if (!selectedContextFiles.includes(path)) selectedContextFiles.push(path);
+      } else {
+        selectedContextFiles = selectedContextFiles.filter(p => p !== path);
+      }
+      renderSelectedFileChips();
+    }
+
+    function renderSelectedFileChips() {
+      const container = document.getElementById('selected-files-chips');
+      if (!container) return;
+      if (!selectedContextFiles.length) {
+        container.innerHTML = '';
+        return;
+      }
+      let html = '';
+      selectedContextFiles.forEach(p => {
+        html += `<span class="file-chip">${escapeHtml(p)}<button class="file-chip-remove" onclick="toggleFileSelection('${escapeHtml(p)}', false);filterFileSelector();void 0;">✕</button></span>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function closeFileSelector() {
+      document.getElementById('file-selector-modal').classList.remove('open');
+    }
 
     function renderContextBar(pack) {
       const bar = document.getElementById('context-bar');
@@ -941,6 +1055,7 @@
       const body = {
         targetKey: document.getElementById('target-key').value,
         prompt: document.getElementById('prompt').value,
+        contextFiles: selectedContextFiles.length ? selectedContextFiles : undefined,
         autoScoutContext: true,
       };
       try {

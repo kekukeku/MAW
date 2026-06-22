@@ -239,5 +239,96 @@ class TestProjectContext(unittest.TestCase):
         )
 
 
+    def test_l1_user_selected_files_added(self):
+        (self.target_root / "src" / "utils.py").write_text("def util():\n    return 42\n", encoding="utf-8")
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["src/utils.py"])
+        self.assertEqual(pack["level"], "L1")
+        self.assertEqual(len(pack["files"]), 1)
+        self.assertEqual(pack["files"][0]["path"], "src/utils.py")
+        self.assertEqual(pack["files"][0]["source"], "user_selected")
+        self.assertIn("def util", pack["files"][0]["content"])
+
+    def test_l1_files_appear_in_prompt_envelope(self):
+        (self.target_root / "src" / "utils.py").write_text("def util():\n    return 42\n", encoding="utf-8")
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["src/utils.py"])
+        envelope = pc.build_prompt_envelope("Implement feature X", pack)
+        self.assertIn("Selected / Scout Files", envelope)
+        self.assertIn("src/utils.py", envelope)
+        self.assertIn("def util", envelope)
+
+    def test_l1_traversal_path_rejected(self):
+        with self.assertRaises(pc.ContextTargetError):
+            pc.build_context_pack("test", "Implement feature X", context_files=["../escape.py"])
+        with self.assertRaises(pc.ContextTargetError):
+            pc.build_context_pack("test", "Implement feature X", context_files=["/etc/passwd"])
+
+    def test_l1_non_existent_file_rejected(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["missing.py"])
+        self.assertEqual(pack["level"], "L0")
+        self.assertEqual(len(pack["files"]), 0)
+        self.assertTrue(any("l1_rejected" in i.get("reason", "") for i in pack["accessIssues"]))
+
+    def test_l1_secret_file_rejected(self):
+        (self.target_root / ".env").write_text("SECRET=123", encoding="utf-8")
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=[".env"])
+        self.assertEqual(pack["level"], "L0")
+        self.assertEqual(len(pack["files"]), 0)
+        self.assertTrue(any(".env" in i.get("path", "") for i in pack["accessIssues"]))
+
+    def test_l1_gitignored_file_rejected(self):
+        (self.target_root / "debug.log").write_text("log entry", encoding="utf-8")
+        with open(self.target_root / ".gitignore", "a", encoding="utf-8") as f:
+            f.write("\n*.log\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["debug.log"])
+        self.assertEqual(pack["level"], "L0")
+        self.assertEqual(len(pack["files"]), 0)
+
+    def test_l1_large_file_truncated(self):
+        large_content = "x" * 15000
+        (self.target_root / "src" / "large.py").write_text(large_content, encoding="utf-8")
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["src/large.py"])
+        self.assertEqual(pack["level"], "L1")
+        self.assertEqual(len(pack["files"]), 1)
+        self.assertTrue(pack["files"][0]["truncated"])
+        self.assertIn("chars omitted", pack["files"][0]["content"])
+
+    def test_list_safe_files_excludes_dirs(self):
+        with self._load_targets_patch():
+            files = pc.list_safe_files("test")
+        paths = {f["path"] for f in files}
+        self.assertIn("src/main.py", paths)
+        self.assertIn("README.md", paths)
+        self.assertNotIn("node_modules", paths)
+        self.assertNotIn(".git", paths)
+
+    def test_list_safe_files_has_metadata(self):
+        with self._load_targets_patch():
+            files = pc.list_safe_files("test")
+        for f in files:
+            self.assertIn("path", f)
+            self.assertIn("size", f)
+            self.assertIn("kind", f)
+            self.assertIn("mtime", f)
+
+    def test_list_safe_files_unknown_target_raises(self):
+        with self.assertRaises(pc.ContextTargetError):
+            pc.list_safe_files("nonexistent")
+
+    def test_l1_multiple_files_increase_summary(self):
+        (self.target_root / "src" / "a.py").write_text("a", encoding="utf-8")
+        (self.target_root / "src" / "b.py").write_text("b", encoding="utf-8")
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Implement feature X", context_files=["src/a.py", "src/b.py"])
+        self.assertEqual(pack["level"], "L1")
+        self.assertEqual(len(pack["files"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
