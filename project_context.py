@@ -720,7 +720,13 @@ def build_context_pack(
 def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> str:
     """Build the full context-aware prompt envelope.
 
-    If context_pack is None, return the prompt with an explicit unavailable marker.
+    Budget priority ordering (highest first):
+      1. Context Status (small, always fits)
+      2. Selected / Scout Files (L1 — never truncated by total budget)
+      3. Project Blueprint (tree, README, dependencies — cut from lowest priority)
+      4. Context Boundaries + User Request (always last)
+
+    Truncation markers are appended to context_pack["accessIssues"] for provenance.
     """
     if context_pack is None:
         return (
@@ -736,10 +742,13 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
             f"{prompt}"
         )
 
+    policy = context_pack.get("policy", {})
+    max_total = policy.get("maxTotalChars", 50000)
     summary = context_pack.get("summary", {})
     blueprint = context_pack.get("blueprint", {})
 
-    context_lines: list[str] = [
+    # ---- P1: Context Status ----
+    status_lines = [
         "# Target Project Context",
         "",
         "## Context Status",
@@ -749,62 +758,29 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
         f"- Total chars: {summary.get('totalChars', 0)}",
         f"- Truncated: {summary.get('truncated', False)}",
         "",
-        "## Project Blueprint",
-        "",
-        "### Directory Tree",
-        "```text",
-        blueprint.get("tree", ""),
-        "```",
-        "",
     ]
+    status_str = "\n".join(status_lines)
 
-    readme = blueprint.get("readme", "")
-    if readme:
-        context_lines.extend([
-            "### README",
-            readme,
-            "",
-        ])
-
-    deps = blueprint.get("dependencies", [])
-    if deps:
-        context_lines.append("### Dependencies / Config Files")
-        for dep in deps:
-            path = dep.get("path", "")
-            content = dep.get("content", "")
-            truncated_marker = " (truncated)" if dep.get("truncated") else ""
-            context_lines.extend([
-                f"#### {path}{truncated_marker}",
-                "```text",
-                content,
-                "```",
-                "",
-            ])
-
+    # ---- P2: Selected / Scout Files (highest priority) ----
+    l1_str = ""
     files = context_pack.get("files", [])
     if files:
-        context_lines.extend([
-            "## Selected / Scout Files",
-            "",
-        ])
+        l1_parts = ["## Selected / Scout Files", ""]
         for f in files:
             path = f.get("path", "")
             source = f.get("source", "")
             content = f.get("content", "")
-            context_lines.extend([
+            l1_parts.extend([
                 f"### File: {path} (source: {source})",
                 "```text",
                 content,
                 "```",
                 "",
             ])
+        l1_str = "\n".join(l1_parts)
 
-    context_str = "\n".join(context_lines)
-    max_total = context_pack.get("policy", {}).get("maxTotalChars", 50000)
-    if len(context_str) > max_total:
-        context_str = context_str[:max_total] + "\n\n[... Context truncated due to character budget limit ...]\n\n"
-
-    boundary_lines = [
+    # ---- P4: Context Boundaries + User Request (always last) ----
+    boundary_str = "\n".join([
         "## Context Boundaries",
         "- You may only make concrete claims based on the provided context.",
         "- If the context is insufficient, explicitly list the missing files or information.",
@@ -815,9 +791,109 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
         "# User Request",
         "",
         prompt,
-    ]
+    ])
 
-    return context_str + "\n" + "\n".join(boundary_lines)
+    # Compute remaining budget for L0 blueprint.
+    fixed_chars = len(status_str) + len(l1_str) + len(boundary_str)
+    remaining = max(0, max_total - fixed_chars)
+    truncated_parts: list[str] = []
+
+    # ---- P3: Blueprint within remaining budget ----
+    bp_parts = ["## Project Blueprint", ""]
+
+    # 3a. Tree (lowest priority: cut first)
+    tree = blueprint.get("tree", "")
+    if tree:
+        if remaining > 0:
+            tree_header = "### Directory Tree\n```text\n"
+            tree_footer = "\n```\n"
+            tree_avail = remaining - len(tree_header) - len(tree_footer)
+            if tree_avail > 0:
+                if len(tree) <= tree_avail:
+                    bp_parts.append(f"{tree_header}{tree}{tree_footer}")
+                    remaining -= len(tree_header) + len(tree) + len(tree_footer)
+                else:
+                    cut = tree[:max(0, tree_avail - 60)]
+                    omit_msg = f"\n[... tree truncated by total budget: {len(tree) - len(cut)} chars omitted ...]\n"
+                    bp_parts.append(f"{tree_header}{cut}{omit_msg}{tree_footer}")
+                    remaining = 0
+                    truncated_parts.append(f"tree_truncated:{len(tree)}chars")
+            else:
+                bp_parts.append("### Directory Tree\n[... tree omitted — insufficient budget ...]\n\n")
+                remaining = max(0, remaining - len(tree_header) - len(tree_footer))
+                truncated_parts.append("tree_omitted_no_budget")
+        else:
+            bp_parts.append("### Directory Tree\n[... tree omitted — no budget remaining ...]\n\n")
+            truncated_parts.append("tree_omitted_no_budget")
+
+    # 3b. README (medium priority)
+    readme = blueprint.get("readme", "")
+    if readme and remaining > 100:
+        readme_header = "### README\n"
+        avail = remaining - len(readme_header)
+        if avail > 100:
+            if len(readme) <= avail:
+                bp_parts.extend([readme_header, readme, ""])
+                remaining -= len(readme_header) + len(readme) + 1
+            else:
+                cut = readme[:max(0, avail - 60)]
+                omit_msg = f"\n[... README truncated by total budget: {len(readme) - len(cut)} chars omitted ...]\n"
+                bp_parts.extend([readme_header, cut, omit_msg, ""])
+                remaining = 0
+                truncated_parts.append("readme")
+        else:
+            bp_parts.append(f"### README\n[... omitted — insufficient budget ({remaining} chars) ...]\n\n")
+            remaining = 0
+            truncated_parts.append("readme_omitted_no_budget")
+
+    # 3c. Dependencies (highest L0 priority within blueprint)
+    deps = blueprint.get("dependencies", [])
+    if deps and remaining > 0:
+        dep_header = "### Dependencies / Config Files\n"
+        bp_parts.append(dep_header)
+        remaining -= len(dep_header)
+        for dep in deps:
+            if remaining <= 50:
+                truncated_parts.append("dependencies_partial")
+                break
+            path = dep.get("path", "")
+            content = dep.get("content", "")
+            truncated_marker = " (truncated)" if dep.get("truncated") else ""
+            dep_title = f"#### {path}{truncated_marker}\n```text\n"
+            dep_footer = "\n```\n"
+            dep_overhead = len(dep_title) + len(dep_footer)
+            avail = remaining - dep_overhead
+            if avail > 50:
+                if len(content) <= avail:
+                    bp_parts.append(f"{dep_title}{content}{dep_footer}")
+                    remaining -= dep_overhead + len(content)
+                else:
+                    cut = content[:max(0, avail - 60)]
+                    omit_msg = f"\n[... dependency file truncated by total budget ...]\n"
+                    bp_parts.append(f"{dep_title}{cut}{omit_msg}{dep_footer}")
+                    remaining = 0
+                    truncated_parts.append(f"dependency_truncated:{path}")
+            else:
+                truncated_parts.append(f"dependency_omitted_no_budget:{path}")
+
+    # Assemble in priority order.
+    result = status_str + "\n" + l1_str + "\n" + "\n".join(bp_parts) + "\n" + boundary_str
+
+    # Record truncation markers in accessIssues for provenance.
+    if truncated_parts:
+        context_pack.setdefault("accessIssues", [])
+        for part in truncated_parts:
+            # Deduplicate.
+            if not any(
+                i.get("reason", "") == f"truncated_by_total_budget:{part}"
+                for i in context_pack["accessIssues"]
+            ):
+                context_pack["accessIssues"].append({
+                    "path": "<prompt_envelope>",
+                    "reason": f"truncated_by_total_budget:{part}",
+                })
+
+    return result
 
 
 def compact_context_digest(context_pack: dict[str, Any]) -> str:

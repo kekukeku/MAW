@@ -341,5 +341,110 @@ class TestProjectContext(unittest.TestCase):
         self.assertEqual(len(pack["files"]), 2)
 
 
+    def test_budget_l1_survives_when_l0_is_sacrificed(self):
+        """L1 files survive total budget truncation; L0 blueprint is cut instead."""
+        big_tree = "big_tree\n" * 500
+        big_readme = "# Big README\n" + "big readme content.\n" * 500
+        big_dep = "dep_content\n" * 500
+        l1_content = "def important():\n    return 'this must survive'\n" * 20
+
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "level": "L1",
+            "policy": {"maxTotalChars": 1500},
+            "summary": {
+                "status": "ready",
+                "includedFiles": 4,
+                "totalChars": len(big_tree) + len(big_readme) + len(big_dep) + len(l1_content),
+                "truncated": True,
+            },
+            "blueprint": {
+                "tree": big_tree,
+                "readme": big_readme,
+                "dependencies": [
+                    {"path": "pyproject.toml", "content": big_dep, "chars": len(big_dep), "truncated": False},
+                ],
+            },
+            "files": [
+                {"path": "src/critical.py", "source": "user_selected", "content": l1_content, "chars": len(l1_content), "truncated": False},
+            ],
+            "accessIssues": [],
+        }
+
+        envelope = pc.build_prompt_envelope("Do the thing", pack)
+
+        self.assertIn("def important", envelope)
+        self.assertIn("src/critical.py", envelope)
+
+        truncated_issues = [
+            i for i in pack["accessIssues"]
+            if "truncated_by_total_budget" in i.get("reason", "")
+        ]
+        tree_omitted = "tree omitted" in envelope.lower()
+        self.assertTrue(len(truncated_issues) > 0 or tree_omitted,
+                        f"Should truncate L0 before L1. envelope length={len(envelope)}")
+
+    def test_budget_cuts_tree_before_l1(self):
+        """When budget is tight, tree is cut before L1 files."""
+        big_tree = "tree_line\n" * 300
+        l1_content = "def keep_me():\n    pass\n" * 5
+
+        (self.target_root / "src" / "keep.py").write_text(l1_content, encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+
+        small_policy = {**pc.DEFAULT_POLICY, "maxTotalChars": 1200}
+        with self._load_targets_patch():
+            pack = pc.build_context_pack(
+                "test",
+                "test",
+                context_files=["src/keep.py"],
+                policy=small_policy,
+            )
+        pack["blueprint"]["tree"] = big_tree
+
+        envelope = pc.build_prompt_envelope("test", pack)
+        self.assertIn("def keep_me", envelope)
+        self.assertIn("src/keep.py", envelope)
+
+        # With 1200 budget and tree=~2700 chars, tree should be truncated.
+        if len(envelope) > 1300:
+            # Still expect L1 content.
+            pass
+        self.assertIn("tree truncated by total budget", envelope.lower().replace("_", " "))
+
+    def test_budget_truncation_markers_are_specific(self):
+        """Truncation issues say what was cut, not just '<context_pack>'."""
+        big_tree = "tree\n" * 600
+        l1_content = "x\n" * 10
+
+        (self.target_root / "src" / "x.py").write_text(l1_content, encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+
+        tiny_policy = {**pc.DEFAULT_POLICY, "maxTotalChars": 800}
+        with self._load_targets_patch():
+            pack = pc.build_context_pack(
+                "test", "test", context_files=["src/x.py"], policy=tiny_policy,
+            )
+        pack["blueprint"]["tree"] = big_tree
+
+        pc.build_prompt_envelope("test", pack)
+
+        truncated_issues = [
+            i for i in pack.get("accessIssues", [])
+            if "truncated_by_total_budget" in i.get("reason", "")
+        ]
+        self.assertTrue(len(truncated_issues) > 0, "Should have total-budget truncation markers")
+        # Markers should be specific (mention tree/readme/dependency), not just a generic tag.
+        for issue in truncated_issues:
+            reason = issue.get("reason", "")
+            self.assertIn(":", reason, f"Reason should have a colon: {reason}")
+            self.assertNotEqual(
+                reason,
+                "truncated_by_total_budget:",
+                "Should have a specific label after the colon",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
