@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import scout
-from project_context import DEFAULT_POLICY
 import project_context as pc
 
 
@@ -74,13 +73,17 @@ class TestScout(unittest.TestCase):
         self.assertGreater(results[0]["score"], 90)
 
     def test_keyword_content_match(self):
-        """Prompt mentioning 'token expiry' should match auth content."""
+        """Prompt keywords should match file content when path does not match."""
         with self._patch_load_targets():
-            results = scout.scout_suggestions("test", "Handle token expiry")
-        paths = {r["path"] for r in results}
+            results = scout.scout_suggestions("test", "Handle credential expiry")
+        auth_result = next(
+            (r for r in results if r["path"] == "src/auth/authentication.py"),
+            None,
+        )
+        self.assertIsNotNone(auth_result, f"Expected authentication.py in {results}")
         self.assertTrue(
-            "src/auth/authentication.py" in paths or "src/auth/tokens.py" in paths,
-            f"Expected auth files in results: {paths}",
+            any(r.startswith("content_match:") for r in auth_result["reasons"]),
+            f"Expected content_match reason, got {auth_result['reasons']}",
         )
 
     def test_secret_files_never_suggested(self):
@@ -109,12 +112,55 @@ class TestScout(unittest.TestCase):
         """Scout results are standalone; they never enter context_pack.files."""
         with self._patch_load_targets():
             suggestions = scout.scout_suggestions("test", "authentication.py")
-        # Scout doesn't modify context_pack — it just returns suggestions.
-        self.assertIsInstance(suggestions, list)
-        for s in suggestions:
-            self.assertIn("path", s)
-            self.assertIn("score", s)
-            self.assertIn("reasons", s)
+            pack = pc.build_context_pack("test", "authentication.py")
+        self.assertGreater(len(suggestions), 0)
+        self.assertEqual(pack["files"], [])
+        self.assertEqual(pack["level"], "L0")
+
+    def test_selected_scout_files_become_user_selected(self):
+        """User-selected scout paths are ingested as L1 user_selected files."""
+        with self._patch_load_targets():
+            suggestions = scout.scout_suggestions("test", "authentication.py")
+            chosen = [suggestions[0]["path"]]
+            pack = pc.build_context_pack("test", "authentication.py", context_files=chosen)
+        self.assertEqual(pack["level"], "L1")
+        self.assertEqual(len(pack["files"]), 1)
+        self.assertEqual(pack["files"][0]["source"], "user_selected")
+
+    def test_gitignored_files_never_suggested(self):
+        """Gitignored files must not appear in scout results."""
+        (self.target_root / "debug.log").write_text("log entry", encoding="utf-8")
+        with open(self.target_root / ".gitignore", "a", encoding="utf-8") as f:
+            f.write("\n*.log\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+        with self._patch_load_targets():
+            results = scout.scout_suggestions("test", "debug.log log entry")
+        paths = {r["path"] for r in results}
+        self.assertNotIn("debug.log", paths)
+
+    def test_content_scan_respects_file_limit(self):
+        """Content scans are capped to avoid reading every safe file."""
+        filler_dir = self.target_root / "src" / "filler"
+        filler_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(20):
+            (filler_dir / f"file_{i:02d}.py").write_text("unrelated filler\n", encoding="utf-8")
+        (self.target_root / "src" / "hidden_match.py").write_text(
+            "def handle_credential_expiry():\n    pass\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+
+        read_count = {"n": 0}
+        original_read = scout._safe_read_head
+
+        def counting_read(path, max_bytes=8000):
+            read_count["n"] += 1
+            return original_read(path, max_bytes)
+
+        with self._patch_load_targets(), patch.object(scout, "_safe_read_head", side_effect=counting_read):
+            scout.scout_suggestions("test", "Handle credential expiry")
+
+        self.assertLessEqual(read_count["n"], scout._MAX_CONTENT_SCAN_FILES)
 
     def test_test_file_bonus(self):
         """Files with a nearby test file get a bonus."""

@@ -138,24 +138,51 @@ class TestContextPreviewAPI(unittest.TestCase):
 
     def test_preview_includes_suggested_files_when_scout_enabled(self):
         suggestions = [
-            {"path": "src/auth.py", "score": 100, "reasons": ["filename_match"], "size": 200, "kind": "py"},
+            {"path": "src/auth.py", "score": 100, "reasons": ["filename_match:auth.py"], "size": 200, "kind": "py"},
             {"path": "src/tokens.py", "score": 60, "reasons": ["keyword_in_path:token"], "size": 100, "kind": "py"},
         ]
-        preview = {"version": 1, "targetKey": "test", "level": "L0", "summary": {"includedFiles": 0, "totalChars": 0, "truncated": False}, "total_tokens": 0,
-                    "files": [], "blueprint": {"hasReadme": False, "dependencyPaths": [], "treePreview": "", "treeTruncated": False},
-                    "accessIssues": [], "totalAccessIssues": 0, "warnings": ["l0_only"]}
-        with patch.object(main, "build_context_pack", return_value={
-            "version": 1, "targetKey": "test", "level": "L0",
-            "summary": {"includedFiles": 0, "totalChars": 0, "truncated": False},
-            "blueprint": {"tree": "", "readme": "", "dependencies": []},
-            "files": [], "accessIssues": [],
-        }), patch.object(main, "scout_suggestions", return_value=suggestions), \
-           patch.object(main, "build_context_preview_response", side_effect=lambda cp, **kw: preview):
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "level": "L0",
+            "summary": {"status": "ready", "includedFiles": 2, "totalChars": 100, "truncated": False},
+            "blueprint": {"tree": "src/", "readme": "# Test", "dependencies": []},
+            "files": [],
+            "accessIssues": [],
+        }
+        with patch.object(main, "build_context_pack", return_value=pack), \
+             patch.object(main, "scout_suggestions", return_value=suggestions):
             res = self.client.post(
                 "/api/maw/context/preview",
                 json={"targetKey": "test", "prompt": "Fix authentication", "autoScoutContext": True},
             )
         self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("suggestedFiles", body)
+        self.assertEqual(len(body["suggestedFiles"]), 2)
+        self.assertEqual(body["suggestedFiles"][0]["path"], "src/auth.py")
+        self.assertEqual(body.get("files", []), [])
+
+    def test_preview_suggested_files_not_in_context_pack_files(self):
+        """Scout suggestions appear in preview only until the user selects them."""
+        src_dir = self.target_root / "src"
+        src_dir.mkdir(exist_ok=True)
+        (src_dir / "authentication.py").write_text("def authenticate():\n    pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=self.target_root, capture_output=True, check=False)
+        with patch.object(pc, "load_targets", return_value=self.targets):
+            res = self.client.post(
+                "/api/maw/context/preview",
+                json={
+                    "targetKey": "test",
+                    "prompt": "Fix authentication.py",
+                    "autoScoutContext": True,
+                },
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("suggestedFiles", body)
+        self.assertGreater(len(body["suggestedFiles"]), 0)
+        self.assertEqual(body.get("files", []), [])
 
     def test_preview_no_suggested_files_when_scout_disabled(self):
         """When autoScoutContext=False, suggestedFiles is absent from preview."""

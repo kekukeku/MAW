@@ -13,14 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from project_context import (
-    ContextTargetError,
-    _is_always_excluded,
-    _batch_git_ignored,
-    DEFAULT_POLICY,
-    list_safe_files,
-)
-from export import load_targets
+import project_context as pc
 from maw_paths import get_project_root
 
 logger = logging.getLogger(__name__)
@@ -53,6 +46,8 @@ _STOP_WORDS = {
 
 # Maximum file size for content scanning (bytes).
 _MAX_CONTENT_SCAN_BYTES = 50000
+# Cap how many files receive a content scan per scout run.
+_MAX_CONTENT_SCAN_FILES = 15
 
 
 def _extract_filename_tokens(prompt: str) -> list[str]:
@@ -166,9 +161,14 @@ def scout_suggestions(
         List of suggestion dicts with keys: path, score, reasons, size, kind.
         Never includes secret/binary/gitignored/build/vendor files.
     """
-    safe_files = list_safe_files(target_key)
+    safe_files = pc.list_safe_files(target_key)
     if not safe_files:
         return []
+
+    targets = pc.load_targets()
+    target_path = targets.get("projects", {}).get(target_key, {}).get("path", "")
+    root_str = get_project_root(target_path) if target_path else ""
+    project_root = Path(root_str) if root_str else None
 
     all_paths = {f["path"].lower() for f in safe_files}
 
@@ -178,6 +178,7 @@ def scout_suggestions(
 
     # Phase 2: score every safe file.
     scored: list[dict[str, Any]] = []
+    content_scans = 0
     for f in safe_files:
         rel_path = f["path"]
         score = 0
@@ -202,22 +203,23 @@ def scout_suggestions(
                 reasons.append(f"keyword_in_path:{kw}")
                 break  # One keyword match per file is enough.
 
-        # (C) Content keyword match (for small files only).
-        if not reasons and f.get("size", 0) < _MAX_CONTENT_SCAN_BYTES and keywords:
-            # Only scan if not already matched.
-            root_str = get_project_root(load_targets().get("projects", {}).get(target_key, {}).get("path", ""))
-            if root_str:
-                abs_path = Path(root_str) / rel_path
-                head = _safe_read_head(abs_path, 8000)
-                if head:
-                    head_lower = head.lower()
-                    content_matches = 0
-                    for kw in keywords:
-                        if kw in head_lower:
-                            content_matches += 1
-                    if content_matches:
-                        score += 30 + content_matches * 5
-                        reasons.append(f"content_match:{content_matches}kws")
+        # (C) Content keyword match (for small files only, capped per run).
+        if (
+            not reasons
+            and keywords
+            and project_root is not None
+            and f.get("size", 0) < _MAX_CONTENT_SCAN_BYTES
+            and content_scans < _MAX_CONTENT_SCAN_FILES
+        ):
+            content_scans += 1
+            abs_path = project_root / rel_path
+            head = _safe_read_head(abs_path, 8000)
+            if head:
+                head_lower = head.lower()
+                content_matches = sum(1 for kw in keywords if kw in head_lower)
+                if content_matches:
+                    score += 30 + content_matches * 5
+                    reasons.append(f"content_match:{content_matches}kws")
 
         if not reasons:
             continue

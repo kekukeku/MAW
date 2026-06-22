@@ -950,9 +950,14 @@
         klass = 'ready';
         statusText = `已載入 ${files.length} 份核心文件 (等級 ${pack.level})`;
       }
+
+      const suggested = pack.suggestedFiles || [];
+      const scoutHint = suggested.length
+        ? ` · Scout 推薦 ${suggested.length} 個檔案`
+        : '';
       
       bar.className = 'context-bar ' + klass;
-      bar.innerHTML = `專案感知背景: ${statusText} · <a onclick="openContextPreview(); return false;">[預覽 Context]</a>`;
+      bar.innerHTML = `專案感知背景: ${statusText}${scoutHint} · <a onclick="openContextPreview(); return false;">[預覽 Context]</a>`;
     }
 
     function renderContextAlert(pack) {
@@ -1055,6 +1060,17 @@
         html += '<h4>核心檔案清單</h4>';
         html += '<table><tr><th>路徑</th><th>來源</th></tr>';
         files.forEach(f => { html += `<tr><td>${escapeHtml(f.path)}</td><td>${escapeHtml(f.source || '-')}</td></tr>`; });
+        html += '</table>';
+      }
+
+      const suggested = pack.suggestedFiles || [];
+      if (suggested.length) {
+        html += '<h4>Scout 推薦檔案（尚未自動加入 Council）</h4>';
+        html += '<table><tr><th>路徑</th><th>分數</th><th>原因</th></tr>';
+        suggested.forEach(s => {
+          const reasons = (s.reasons || []).slice(0, 2).join(', ');
+          html += `<tr><td>${escapeHtml(s.path)}</td><td>${escapeHtml(String(s.score))}</td><td>${escapeHtml(reasons || '-')}</td></tr>`;
+        });
         html += '</table>';
       }
 
