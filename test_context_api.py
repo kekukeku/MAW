@@ -136,6 +136,42 @@ class TestContextPreviewAPI(unittest.TestCase):
             res = self.client.get("/api/maw/targets/test/files")
         self.assertEqual(res.status_code, 500)
 
+    def test_preview_includes_suggested_files_when_scout_enabled(self):
+        suggestions = [
+            {"path": "src/auth.py", "score": 100, "reasons": ["filename_match"], "size": 200, "kind": "py"},
+            {"path": "src/tokens.py", "score": 60, "reasons": ["keyword_in_path:token"], "size": 100, "kind": "py"},
+        ]
+        preview = {"version": 1, "targetKey": "test", "level": "L0", "summary": {"includedFiles": 0, "totalChars": 0, "truncated": False}, "total_tokens": 0,
+                    "files": [], "blueprint": {"hasReadme": False, "dependencyPaths": [], "treePreview": "", "treeTruncated": False},
+                    "accessIssues": [], "totalAccessIssues": 0, "warnings": ["l0_only"]}
+        with patch.object(main, "build_context_pack", return_value={
+            "version": 1, "targetKey": "test", "level": "L0",
+            "summary": {"includedFiles": 0, "totalChars": 0, "truncated": False},
+            "blueprint": {"tree": "", "readme": "", "dependencies": []},
+            "files": [], "accessIssues": [],
+        }), patch.object(main, "scout_suggestions", return_value=suggestions), \
+           patch.object(main, "build_context_preview_response", side_effect=lambda cp, **kw: preview):
+            res = self.client.post(
+                "/api/maw/context/preview",
+                json={"targetKey": "test", "prompt": "Fix authentication", "autoScoutContext": True},
+            )
+        self.assertEqual(res.status_code, 200)
+
+    def test_preview_no_suggested_files_when_scout_disabled(self):
+        """When autoScoutContext=False, suggestedFiles is absent from preview."""
+        with patch.object(main, "build_context_pack", return_value={
+            "version": 1, "targetKey": "test", "level": "L0",
+            "summary": {"includedFiles": 0, "totalChars": 0, "truncated": False},
+            "blueprint": {"tree": "", "readme": "", "dependencies": []},
+            "files": [], "accessIssues": [],
+        }), patch.object(main, "build_context_preview_response", return_value={"targetKey": "test", "level": "L0"}):
+            res = self.client.post(
+                "/api/maw/context/preview",
+                json={"targetKey": "test", "prompt": "Fix auth", "autoScoutContext": False},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("suggestedFiles", res.json())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -920,11 +920,16 @@ def compact_context_digest(context_pack: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_context_preview_response(context_pack: dict[str, Any]) -> dict[str, Any]:
+def build_context_preview_response(
+    context_pack: dict[str, Any],
+    suggested_files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return a slim, UI-safe preview of a context pack.
 
-    Removes heavy text blobs (README text, dependency file contents, full tree)
-    while keeping enough metadata for the Panel 1 context bar and preview modal.
+    Removes heavy text blobs while keeping enough metadata for the
+    Panel 1 context bar and preview modal.  When suggested_files is
+    provided (scout results), they are included in the response without
+    being auto-injected into context_pack.files.
     """
     summary = context_pack.get("summary", {})
     blueprint = context_pack.get("blueprint", {})
@@ -945,7 +950,7 @@ def build_context_preview_response(context_pack: dict[str, Any]) -> dict[str, An
     total_chars = summary.get("totalChars", 0)
     total_tokens = int(total_chars / 4) if total_chars else 0
 
-    return {
+    result: dict[str, Any] = {
         "version": context_pack.get("version", CONTEXT_PACK_VERSION),
         "targetKey": context_pack.get("targetKey", ""),
         "level": context_pack.get("level", "L0"),
@@ -976,3 +981,15 @@ def build_context_preview_response(context_pack: dict[str, Any]) -> dict[str, An
         "totalAccessIssues": len(access_issues),
         "warnings": warnings_list,
     }
+    if suggested_files:
+        result["suggestedFiles"] = [
+            {
+                "path": s["path"],
+                "score": s["score"],
+                "reasons": s.get("reasons", []),
+                "size": s.get("size", 0),
+                "kind": s.get("kind", "unknown"),
+            }
+            for s in suggested_files
+        ]
+    return result

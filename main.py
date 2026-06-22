@@ -27,6 +27,7 @@ from project_context import (
     ContextTargetError,
     list_safe_files,
 )
+from scout import scout_suggestions
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -268,6 +269,9 @@ async def preview_context(req: ContextPreviewRequest):
     """Preview target project context.
 
     Accepts contextFiles and autoScoutContext for L1/L2.
+    When autoScoutContext is True, runs the scout recommendation engine
+    and returns suggestedFiles alongside the preview.  Scout results are
+    never auto-injected into the context pack.
     """
     try:
         context_pack = build_context_pack(
@@ -276,7 +280,13 @@ async def preview_context(req: ContextPreviewRequest):
             context_files=req.contextFiles,
             auto_scout=req.autoScoutContext,
         )
-        return build_context_preview_response(context_pack)
+        suggested = None
+        if req.autoScoutContext and req.prompt.strip():
+            try:
+                suggested = scout_suggestions(req.targetKey, req.prompt)
+            except Exception:
+                logger.warning("Scout suggestions failed for target %s", req.targetKey, exc_info=True)
+        return build_context_preview_response(context_pack, suggested_files=suggested)
     except ContextTargetError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

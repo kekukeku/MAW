@@ -803,13 +803,28 @@
           files = await res.json();
           availableFilesCache = { targetKey, files };
         }
-        renderFileSelectorList(files);
+        const suggested = (lastContextPack && lastContextPack.suggestedFiles) ? lastContextPack.suggestedFiles : null;
+        renderFileSelectorList(files, suggested);
       } catch (e) {
         list.innerHTML = '<p style="color:var(--err);padding:12px;">網路錯誤</p>';
       }
     }
 
-    function renderFileSelectorList(files) {
+    function addSuggestedFiles() {
+      if (!lastContextPack || !lastContextPack.suggestedFiles) return;
+      const sf = lastContextPack.suggestedFiles;
+      for (const s of sf) {
+        if (!selectedContextFiles.includes(s.path)) {
+          selectedContextFiles.push(s.path);
+        }
+      }
+      renderSelectedFileChips();
+      if (availableFilesCache && availableFilesCache.files) {
+        renderFileSelectorList(availableFilesCache.files, sf);
+      }
+    }
+
+    function renderFileSelectorList(files, suggested) {
       const list = document.getElementById('file-selector-list');
       if (!files || !files.length) {
         list.innerHTML = '<p style="color:var(--muted);padding:12px;">無可選檔案</p>';
@@ -821,17 +836,60 @@
       const selected = new Set(selectedContextFiles);
       let html = '';
       let count = 0;
-      for (const f of files) {
-        if (search && !f.path.toLowerCase().includes(search)) continue;
-        const checked = selected.has(f.path) ? 'checked' : '';
-        const sizeKb = f.size ? ` · ${(f.size/1024).toFixed(1)} KB` : '';
-        const kindLabel = f.kind ? f.kind.toUpperCase() : '';
-        html += `<label class="file-selector-row">
-          <input type="checkbox" value="${escapeHtml(f.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(f.path)}', this.checked)">
-          <span class="file-selector-path">${escapeHtml(f.path)}</span>
-          <span class="file-selector-meta">${kindLabel}${sizeKb}</span>
-        </label>`;
-        count++;
+
+      // --- Suggested files section ---
+      if (suggested && suggested.length && !search) {
+        html += '<div style="font-weight:600;color:var(--accent);margin-bottom:4px;font-size:12px;">⭐ 推薦檔案 (Scout)</div>';
+        const sugPaths = new Set(suggested.map(s => s.path));
+        for (const s of suggested) {
+          const checked = selected.has(s.path) ? 'checked' : '';
+          const scorePct = Math.min(100, Math.round(s.score * 100 / 200));
+          const reasonsShort = (s.reasons || []).slice(0, 2).join(', ');
+          html += `<label class="file-selector-row" style="background:rgba(59,130,246,0.06);">
+            <input type="checkbox" value="${escapeHtml(s.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(s.path)}', this.checked)">
+            <span class="file-selector-path">${escapeHtml(s.path)}</span>
+            <span class="file-selector-meta" title="${escapeHtml(reasonsShort)}">score:${scorePct}%</span>
+          </label>`;
+          count++;
+        }
+        html += '<div style="margin:8px 0 4px;">'
+          + '<button class="btn btn-primary" style="font-size:10px;padding:2px 10px;border-radius:4px;" onclick="addSuggestedFiles()">+ 全部加入</button>'
+          + '</div>';
+        html += '<div style="font-weight:600;color:var(--muted);margin:8px 0 4px;font-size:12px;border-top:1px solid var(--border);padding-top:8px;">📁 所有檔案</div>';
+        // Only show non-suggested files in searchable list to avoid duplication.
+        const nonSug = files.filter(f => !sugPaths.has(f.path));
+        if (!nonSug.length) {
+          html += '<p style="color:var(--muted);padding:4px 8px;font-size:11px;">所有建議檔案已在上方顯示</p>';
+          list.innerHTML = html;
+          return;
+        }
+        // Re-show regular files that are not suggested.
+        for (const f of nonSug) {
+          if (search && !f.path.toLowerCase().includes(search)) continue;
+          const checked = selected.has(f.path) ? 'checked' : '';
+          const sizeKb = f.size ? ` · ${(f.size/1024).toFixed(1)} KB` : '';
+          const kindLabel = f.kind ? f.kind.toUpperCase() : '';
+          html += `<label class="file-selector-row">
+            <input type="checkbox" value="${escapeHtml(f.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(f.path)}', this.checked)">
+            <span class="file-selector-path">${escapeHtml(f.path)}</span>
+            <span class="file-selector-meta">${kindLabel}${sizeKb}</span>
+          </label>`;
+          count++;
+        }
+      } else {
+        // No suggestions — show all files.
+        for (const f of files) {
+          if (search && !f.path.toLowerCase().includes(search)) continue;
+          const checked = selected.has(f.path) ? 'checked' : '';
+          const sizeKb = f.size ? ` · ${(f.size/1024).toFixed(1)} KB` : '';
+          const kindLabel = f.kind ? f.kind.toUpperCase() : '';
+          html += `<label class="file-selector-row">
+            <input type="checkbox" value="${escapeHtml(f.path)}" ${checked} onchange="toggleFileSelection('${escapeHtml(f.path)}', this.checked)">
+            <span class="file-selector-path">${escapeHtml(f.path)}</span>
+            <span class="file-selector-meta">${kindLabel}${sizeKb}</span>
+          </label>`;
+          count++;
+        }
       }
       if (!count) html = '<p style="color:var(--muted);padding:12px;">無符合檔案</p>';
       list.innerHTML = html;
@@ -839,7 +897,8 @@
 
     function filterFileSelector() {
       if (availableFilesCache?.files) {
-        renderFileSelectorList(availableFilesCache.files);
+        const suggested = (lastContextPack && lastContextPack.suggestedFiles) ? lastContextPack.suggestedFiles : null;
+        renderFileSelectorList(availableFilesCache.files, suggested);
       }
     }
 
