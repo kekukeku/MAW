@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 from export import export_to_target, load_targets, validate_target, slugify_title
 from maw_paths import get_workflow_root
 from council.council import run_council
-from council.storage import load_conversation, CONVERSATIONS_DIR
-from project_context import build_context_pack
+from council.storage import load_conversation, save_conversation, CONVERSATIONS_DIR
+from project_context import build_context_pack, build_context_audit_summary
 
 load_dotenv()
 
@@ -350,46 +350,106 @@ class LoopOrchestrator:
         asyncio.create_task(self._run_council_task(wf_id))
         return self._public_workflow(wf)
 
-    def _can_auto_approve_council(self, wf: dict[str, Any], context_pack: dict[str, Any] | None) -> tuple[bool, str]:
-        """Context-aware guard for auto_approve_council policy."""
+    def _can_auto_approve_council(self, wf: dict[str, Any], context_pack: dict[str, Any] | None) -> dict[str, Any]:
+        """Context-aware guard for auto_approve_council policy.
+
+        Returns a decision dictionary:
+        {
+            "allowed": bool,
+            "reasonCode": str,
+            "riskFlags": list[str]
+        }
+        """
+        audit_summary = build_context_audit_summary(context_pack)
+        risk_flags = audit_summary.get("riskFlags", [])
         policy = wf.get("review_policy", {})
+
+        # 1. blocked_policy_disabled
         if not policy.get("auto_approve_council"):
-            return False, "auto_approve_council disabled"
+            return {
+                "allowed": False,
+                "reasonCode": "blocked_policy_disabled",
+                "riskFlags": risk_flags
+            }
 
-        if context_pack is None:
-            return False, "context pack unavailable"
+        # 2. blocked_no_context
+        if context_pack is None or audit_summary.get("status") == "unavailable":
+            return {
+                "allowed": False,
+                "reasonCode": "blocked_no_context",
+                "riskFlags": risk_flags
+            }
 
-        summary = context_pack.get("summary", {})
-        if summary.get("status") != "ready":
-            return False, f"context status is {summary.get('status')}"
+        # 3. blocked_context_failed
+        if audit_summary.get("status") == "failed":
+            return {
+                "allowed": False,
+                "reasonCode": "blocked_context_failed",
+                "riskFlags": risk_flags
+            }
 
+        # 4. blocked_fatal_access
         access_issues = context_pack.get("accessIssues", [])
         fatal_issues = [i for i in access_issues if i.get("reason", "").startswith("permission_denied")]
         if fatal_issues:
-            return False, "fatal access issues in context pack"
+            return {
+                "allowed": False,
+                "reasonCode": "blocked_fatal_access",
+                "riskFlags": risk_flags
+            }
 
-        # Phase 6a: only L0 blueprint is available.
-        files = context_pack.get("files", [])
-        if not files:
-            # Check if review policy explicitly allows L0-only auto approve.
+        # 5. blocked_context_partial
+        if audit_summary.get("status") == "partial":
+            # If the policy explicitly disables partial auto-approve:
+            if not policy.get("allow_partial_auto_approve", True):
+                return {
+                    "allowed": False,
+                    "reasonCode": "blocked_context_partial",
+                    "riskFlags": risk_flags
+                }
+
+        # 6. blocked_l0_only
+        highest_level = audit_summary.get("highestLevel", "L0")
+        if highest_level == "L0":
             if not policy.get("allow_l0_auto_approve", False):
-                return False, "context pack has only L0 blueprint; allow_l0_auto_approve is false"
+                return {
+                    "allowed": False,
+                    "reasonCode": "blocked_l0_only",
+                    "riskFlags": risk_flags
+                }
 
-        # If user explicitly mentioned a filename in the prompt, ensure it exists in context.
+        # 7. blocked_scout_auto_selected
+        if "scout_auto_selected" in risk_flags:
+            if not policy.get("allow_scout_auto_approve", False):
+                return {
+                    "allowed": False,
+                    "reasonCode": "blocked_scout_auto_selected",
+                    "riskFlags": risk_flags
+                }
+
+        # 8. blocked_prompt_file_missing
         prompt = wf.get("prompt", "")
+        files = context_pack.get("files", [])
         all_context_paths = {f.get("path", "") for f in files}
         all_context_paths.update(d.get("path", "") for d in context_pack.get("blueprint", {}).get("dependencies", []))
-        # Lightweight filename extraction: tokens that look like file paths.
         for token in prompt.split():
             if "/" in token or token.endswith(".py") or token.endswith(".js") or token.endswith(".ts"):
-                # Strip punctuation.
                 cleaned = token.strip(".,;:!?()[]{}\"'").strip()
                 if cleaned and cleaned not in all_context_paths and not any(cleaned.endswith(p) for p in all_context_paths):
-                    # Only block if the filename looks like it should be in the repo but isn't.
                     if "." in cleaned and not cleaned.startswith("http"):
-                        return False, f"prompt references file not found in context: {cleaned}"
+                        return {
+                            "allowed": False,
+                            "reasonCode": "blocked_prompt_file_missing",
+                            "riskFlags": risk_flags
+                        }
 
-        return True, ""
+        # 9. allowed_policy_ok
+        return {
+            "allowed": True,
+            "reasonCode": "allowed_policy_ok",
+            "riskFlags": risk_flags
+        }
+
 
     def _has_scout_auto_selected(self, context_pack: dict[str, Any] | None) -> bool:
         """Return True if any context file was scout-auto-selected."""
@@ -511,14 +571,19 @@ class LoopOrchestrator:
             self._persist()
 
             # Auto-approve council if enabled in review policy (gate #1)
-            can_auto, guard_reason = self._can_auto_approve_council(wf, context_pack)
-            # G10: block auto-approve when scout_auto_selected files present,
-            #      unless review_policy explicitly allows it.
-            if can_auto and self._has_scout_auto_selected(context_pack):
-                policy = wf.get("review_policy", {})
-                if not policy.get("allow_scout_auto_approve", False):
-                    can_auto = False
-                    guard_reason = "scout_auto_selected files present; allow_scout_auto_approve is false"
+            decision = self._can_auto_approve_council(wf, context_pack)
+            conversation["context_audit"] = {
+                "auditSummary": build_context_audit_summary(context_pack),
+                "autoApprovePolicy": {
+                    "allowed": decision["allowed"],
+                    "reasonCode": decision["reasonCode"],
+                    "riskFlags": decision["riskFlags"]
+                }
+            }
+            save_conversation(conversation)
+
+            can_auto = decision["allowed"]
+            guard_reason = decision["reasonCode"]
             if can_auto:
                 logger.info("Auto-approving council for %s", conversation["id"])
                 self._append_log(wf, "system", "Auto-approving council (skips gate #1)")

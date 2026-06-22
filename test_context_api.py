@@ -110,6 +110,37 @@ class TestContextPreviewAPI(unittest.TestCase):
         self.assertNotIn("targetPath", preview)
         self.assertNotIn("content", preview["blueprint"])
 
+    def test_build_context_preview_response_includes_explorer_brief_and_would_auto_include(self):
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "level": "L3",
+            "summary": {"status": "ready", "includedFiles": 2, "totalChars": 1000, "truncated": False},
+            "blueprint": {"tree": "a\nb", "readme": "hi", "dependencies": []},
+            "files": [{"path": "src/auth.py", "source": "user_selected"}],
+            "accessIssues": [],
+            "explorerBrief": {
+                "version": 1,
+                "status": "ready",
+                "summary": "Explorer summary",
+                "candidateFiles": [],
+                "commands": [],
+                "limits": {},
+                "accessIssues": [],
+            }
+        }
+        would_auto = [{"path": "src/other.py", "score": 80, "reasons": ["reasons"], "source": "scout_auto_selected"}]
+        preview = build_context_preview_response(pack, would_auto_include=would_auto)
+        
+        self.assertIn("explorerBrief", preview)
+        self.assertEqual(preview["explorerBrief"]["status"], "ready")
+        self.assertEqual(preview["explorerBrief"]["summary"], "Explorer summary")
+        self.assertIn("wouldAutoInclude", preview)
+        self.assertEqual(len(preview["wouldAutoInclude"]), 1)
+        self.assertEqual(preview["wouldAutoInclude"][0]["path"], "src/other.py")
+
+
+
 
     def test_list_target_files_api(self):
         with patch.object(pc, "load_targets", return_value=self.targets):

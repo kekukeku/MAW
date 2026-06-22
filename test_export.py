@@ -6,6 +6,7 @@ import shutil
 import time
 from datetime import datetime
 import re
+from unittest.mock import patch
 
 # Import target functions to test
 from export import (
@@ -179,7 +180,7 @@ Some headers.
             export_options_text={"targetKey": "test", "filesAffected": "", "nonGoals": ""},
             context_pack=context_pack,
         )
-        self.assertIn("## 3. Target Project Context", md)
+        self.assertIn("## Target Project Context Audit", md)
         self.assertIn("package.json", md)
         self.assertIn(".env", md)
         self.assertIn("stage3", md)
@@ -269,5 +270,82 @@ Some headers.
         )
         self.assertIn("src/main.py", md)
 
+    def test_export_to_target_includes_audit_json(self):
+        from export import export_to_target
+        temp_conv_dir = tempfile.mkdtemp()
+        conv_data = {
+            "title": "Test Task",
+            "prompt": "Test Prompt",
+            "context_pack": {
+                "version": 1,
+                "targetKey": "test",
+                "summary": {"status": "ready"},
+                "blueprint": {"tree": "t"},
+                "files": [],
+                "accessIssues": []
+            },
+            "context_audit": {
+                "auditSummary": {
+                    "status": "ready",
+                    "highestLevel": "L0"
+                },
+                "autoApprovePolicy": {
+                    "allowed": True,
+                    "reasonCode": "allowed_policy_ok",
+                    "riskFlags": []
+                }
+            },
+            "messages": [
+                {"role": "user", "content": "Test Prompt"},
+                {
+                    "role": "assistant",
+                    "content": "Stage 3 result",
+                    "stage1": [{"model": "m", "response": "r"}],
+                    "stage2": [{"model": "m", "ranking": "rankings"}],
+                    "stage3": {"response": "Stage 3 result"},
+                    "metadata": {"models": {"m": "model-a"}}
+                }
+            ]
+        }
+        
+        # Save to mock conversations dir
+        with open(os.path.join(temp_conv_dir, "conv-123.json"), "w", encoding="utf-8") as f:
+            json.dump(conv_data, f)
+            
+        target_dir = tempfile.mkdtemp()
+        # Initialize basic git structures for validation
+        os.makedirs(os.path.join(target_dir, "MAW_workflow", "TASKS"))
+        os.makedirs(os.path.join(target_dir, "MAW_workflow", "PLANNING"))
+        with open(os.path.join(target_dir, "MAW_workflow", "AGENT_STATE.md"), "w", encoding="utf-8") as f:
+            f.write("# Agent State\n\n| Task ID | State |\n|---|---|\n")
+            
+        with patch("export.get_conversations_dir", return_value=temp_conv_dir), \
+             patch("export.load_targets", return_value={"projects": {"test": {"path": target_dir}}}), \
+             patch("export.validate_target", return_value=(True, [])):
+             
+            res = export_to_target(
+                target_key="test",
+                conversation_id="conv-123",
+                message_index=1,
+                title="Test Task",
+                priority="MEDIUM",
+                files_affected="",
+                non_goals=""
+            )
+            
+            # Read the exported JSON
+            json_file = os.path.join(target_dir, "MAW_workflow", "PLANNING", f"council_{res['taskNum']}.json")
+            self.assertTrue(os.path.exists(json_file))
+            with open(json_file, "r") as f:
+                exported_json = json.load(f)
+            self.assertIn("contextAuditSummary", exported_json)
+            self.assertIn("autoApprovePolicy", exported_json)
+            self.assertEqual(exported_json["autoApprovePolicy"]["reasonCode"], "allowed_policy_ok")
+            
+        shutil.rmtree(temp_conv_dir, ignore_errors=True)
+        shutil.rmtree(target_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
+

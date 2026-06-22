@@ -1123,10 +1123,10 @@
 
     function resolveContextPreview(conv) {
       if (!conv) return null;
+      let preview = null;
       if (conv.context && conv.context.preview) {
-        return conv.context.preview;
-      }
-      if (conv.context_pack) {
+        preview = conv.context.preview;
+      } else if (conv.context_pack) {
         const pack = conv.context_pack;
         const summary = pack.summary || {};
         const blueprint = pack.blueprint || {};
@@ -1138,7 +1138,7 @@
         const treePreview = treeLines.slice(0, 30).join('\n');
         const treeTruncated = treeLines.length > 30;
         
-        const preview = {
+        preview = {
           version: pack.version || 1,
           targetKey: pack.targetKey || '',
           level: pack.level || 'L0',
@@ -1168,9 +1168,20 @@
         };
         if (!files.length) preview.warnings.push('l0_only');
         if (summary.truncated) preview.warnings.push('truncated');
-        return preview;
+        if (pack.explorerBrief) {
+          preview.explorerBrief = pack.explorerBrief;
+        }
       }
-      return null;
+      
+      if (preview) {
+        if (conv.context_audit && !preview.context_audit) {
+          preview.context_audit = conv.context_audit;
+        }
+        if (conv.context_pack && conv.context_pack.explorerBrief && !preview.explorerBrief) {
+          preview.explorerBrief = conv.context_pack.explorerBrief;
+        }
+      }
+      return preview;
     }
 
     function formatContextWarning(code) {
@@ -1180,6 +1191,40 @@
         unavailable: '未載入專案背景',
       };
       return labels[code] || code;
+    }
+
+    function formatReasonCode(code) {
+      const mapping = {
+        'allowed_policy_ok': '策略通過，自動批准 (allowed_policy_ok)',
+        'blocked_policy_disabled': '自動批准策略未啟用 (blocked_policy_disabled)',
+        'blocked_no_context': '未提供專案感知背景 (blocked_no_context)',
+        'blocked_l0_only': '僅有 L0 專案藍圖 (blocked_l0_only)',
+        'blocked_scout_auto_selected': '包含 Scout 自動選取的推薦檔案 (blocked_scout_auto_selected)',
+        'blocked_context_failed': '背景掃描發生致命錯誤 (blocked_context_failed)',
+        'blocked_context_partial': '背景內容不完整且拒絕自動批准 (blocked_context_partial)',
+        'blocked_fatal_access': '檔案存取權限不足 (blocked_fatal_access)',
+        'blocked_prompt_file_missing': '任務需求中提及的檔案在專案中找不到 (blocked_prompt_file_missing)'
+      };
+      return mapping[code] || code || 'N/A';
+    }
+
+    function formatRiskFlag(flag) {
+      const mapping = {
+        'scout_auto_selected': '包含 Scout 自動選入檔案 (scout_auto_selected)',
+        'explorer_timeout': 'Explorer 掃描逾時 (explorer_timeout)',
+        'context_truncated': '背景字元超出預算已截斷 (context_truncated)',
+        'access_issue': '檔案存取或排除警訊 (access_issue)',
+        'l0_only': '僅限 L0 藍圖層級 (l0_only)'
+      };
+      return mapping[flag] || flag;
+    }
+
+    function formatFileSource(source) {
+      const mapping = {
+        'user_selected': '手動選取 (user_selected)',
+        'scout_auto_selected': 'Scout 自動 (scout_auto_selected)'
+      };
+      return mapping[source] || source || '-';
     }
 
     // --- Phase 6e-C: auto-include scout files UI ---
@@ -1376,10 +1421,35 @@
 
     function renderContextPreviewContent(pack) {
       if (!pack) return '<p class="preview-empty">無可用背景資訊。</p>';
+      let html = '';
+      
+      if (pack.context_audit) {
+        const audit = pack.context_audit;
+        const summary = audit.auditSummary || {};
+        const policy = audit.autoApprovePolicy || {};
+        const risks = policy.riskFlags || summary.riskFlags || [];
+        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(formatRiskFlag(r))}">${escapeHtml(r)}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
+        
+        let riskDetailsHtml = '';
+        if (risks.length > 0) {
+          riskDetailsHtml = `<ul style="margin: 4px 0; padding-left: 20px;">` + risks.map(r => `<li><strong>${escapeHtml(r)}</strong>: ${escapeHtml(formatRiskFlag(r))}</li>`).join('') + `</ul>`;
+        }
+        
+        html += `
+          <div class="audit-summary-block" style="border: 1px solid var(--border); padding: 12px; border-radius: 6px; margin-bottom: 16px; background: rgba(255,255,255,0.02)">
+            <h4 style="margin-top: 0; margin-bottom: 8px;">🛡️ 專案背景審計 (Context Audit)</h4>
+            <p style="margin: 4px 0;"><strong>自動批准決策:</strong> ${policy.allowed ? '<span style="color: var(--ok)">已批准 (Allowed)</span>' : '<span style="color: var(--err)">未批准 (Blocked)</span>'}</p>
+            <p style="margin: 4px 0;"><strong>決策代碼 (Reason Code):</strong> <code>${escapeHtml(formatReasonCode(policy.reasonCode))}</code></p>
+            <p style="margin: 4px 0;"><strong>審計風險標記 (Risk Flags):</strong> ${riskStr}</p>
+            ${risks.length > 0 ? `<div style="font-size: 12px; margin-left: 12px; margin-top: 6px;">${riskDetailsHtml}</div>` : ''}
+          </div>
+        `;
+      }
+
       const files = pack.files || [];
       const isL0 = pack.level === 'L0' || files.length === 0;
       const included = pack.summary?.includedFiles ?? 0;
-      let html = `<p><strong>背景等級:</strong> ${escapeHtml(pack.level || 'Unknown')}</p>`;
+      html += `<p><strong>背景等級:</strong> ${escapeHtml(pack.level || 'Unknown')}</p>`;
       if (isL0) {
         html += `<p><strong>L0 藍圖內容:</strong> ${included} 項已納入 Council（目錄樹、README、依賴/設定檔摘要）</p>`;
       } else {
@@ -1387,10 +1457,20 @@
       }
       if (pack.total_tokens) html += `<p><strong>估算 Tokens:</strong> ~${pack.total_tokens}</p>`;
 
-      if (files.length) {
-        html += '<h4>核心檔案清單</h4>';
+      const userFiles = files.filter(f => f.source !== 'scout_auto_selected');
+      const scoutFiles = files.filter(f => f.source === 'scout_auto_selected');
+
+      if (userFiles.length) {
+        html += '<h4>手動選取檔案 (User-Selected Files)</h4>';
         html += '<table><tr><th>路徑</th><th>來源</th></tr>';
-        files.forEach(f => { html += `<tr><td>${escapeHtml(f.path)}</td><td>${escapeHtml(f.source || '-')}</td></tr>`; });
+        userFiles.forEach(f => { html += `<tr><td>${escapeHtml(f.path)}</td><td>${escapeHtml(formatFileSource(f.source))}</td></tr>`; });
+        html += '</table>';
+      }
+
+      if (scoutFiles.length) {
+        html += '<h4>自動注入推薦 (Scout Auto-Selected Files)</h4>';
+        html += '<table><tr><th>路徑</th><th>來源</th></tr>';
+        scoutFiles.forEach(f => { html += `<tr><td>${escapeHtml(f.path)}</td><td>${escapeHtml(formatFileSource(f.source))}</td></tr>`; });
         html += '</table>';
       }
 
@@ -1405,8 +1485,9 @@
         html += '</table>';
       }
 
-      if (lastExplorerBrief && isExplorerBriefLive()) {
-        html += renderExplorerBriefHtml(lastExplorerBrief);
+      const eb = pack.explorerBrief || (lastExplorerBrief && isExplorerBriefLive() ? lastExplorerBrief : null);
+      if (eb) {
+        html += renderExplorerBriefHtml(eb);
       }
 
       const suggested = pack.suggestedFiles || [];
@@ -1523,7 +1604,27 @@
         lastContextPack = ctx;
         renderContextBar(ctx);
       }
-      let html = renderContextAlerts(ctx);
+      let html = '';
+      if (conv.context_audit) {
+        const audit = conv.context_audit;
+        const summary = audit.auditSummary || {};
+        const policy = audit.autoApprovePolicy || {};
+        const risks = policy.riskFlags || summary.riskFlags || [];
+        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(formatRiskFlag(r))}">${escapeHtml(r)}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
+        const allowedStr = policy.allowed ? '<span style="color: var(--ok); font-weight: bold;">自動批准 (Allowed)</span>' : `<span style="color: var(--err); font-weight: bold;">手動審查 (Blocked: ${escapeHtml(formatReasonCode(policy.reasonCode))})</span>`;
+        
+        html += `
+          <div class="audit-summary-card" style="margin-bottom: 12px; padding: 12px; border-radius: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border);">
+            <div style="font-weight: bold; margin-bottom: 8px;">🛡️ 專案背景審計 (Context Audit)</div>
+            <div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px;">
+              <div><b>感知階層 (Highest Level)</b>: ${escapeHtml(summary.highestLevel || 'L0')}</div>
+              <div><b>審批決策 (Decision)</b>: ${allowedStr}</div>
+              <div><b>風險標記 (Risk Flags)</b>: ${riskStr}</div>
+            </div>
+          </div>
+        `;
+      }
+      html += renderContextAlerts(ctx);
       if (ctx) {
         html += `
         <details class="context-details">

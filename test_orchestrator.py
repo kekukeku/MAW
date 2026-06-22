@@ -464,6 +464,122 @@ class TestOrchestrator(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_can_auto_approve_council_reason_codes(self):
+        # 1. blocked_policy_disabled
+        wf = {"review_policy": {"auto_approve_council": False}}
+        dec = self.orch._can_auto_approve_council(wf, None)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_policy_disabled")
+
+        # 2. blocked_no_context
+        wf = {"review_policy": {"auto_approve_council": True}}
+        dec = self.orch._can_auto_approve_council(wf, None)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_no_context")
+
+        # 3. blocked_context_failed
+        pack_failed = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "failed"},
+            "files": [],
+            "accessIssues": []
+        }
+        dec = self.orch._can_auto_approve_council(wf, pack_failed)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_context_failed")
+
+        # 4. blocked_fatal_access
+        pack_fatal = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready"},
+            "files": [],
+            "accessIssues": [{"path": "secret", "reason": "permission_denied"}]
+        }
+        dec = self.orch._can_auto_approve_council(wf, pack_fatal)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_fatal_access")
+
+        # 5. blocked_context_partial
+        pack_partial = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready"},
+            "files": [{"path": "src/main.py", "source": "user_selected"}],
+            "accessIssues": [{"path": "secret", "reason": "excluded_secret"}]
+        }
+        # Policy disables partial auto-approve
+        wf_no_partial = {"review_policy": {"auto_approve_council": True, "allow_partial_auto_approve": False}}
+        dec = self.orch._can_auto_approve_council(wf_no_partial, pack_partial)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_context_partial")
+
+        # 6. blocked_l0_only
+        pack_l0 = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready"},
+            "files": [],
+            "accessIssues": []
+        }
+        wf_l0_blocked = {"review_policy": {"auto_approve_council": True, "allow_l0_auto_approve": False}}
+        dec = self.orch._can_auto_approve_council(wf_l0_blocked, pack_l0)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_l0_only")
+
+        # 7. blocked_scout_auto_selected
+        pack_scout = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready"},
+            "files": [{"path": "src/auth.py", "source": "scout_auto_selected"}],
+            "accessIssues": []
+        }
+        wf_scout_blocked = {
+            "review_policy": {
+                "auto_approve_council": True,
+                "allow_l0_auto_approve": True,
+                "allow_scout_auto_approve": False
+            }
+        }
+        dec = self.orch._can_auto_approve_council(wf_scout_blocked, pack_scout)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_scout_auto_selected")
+
+        # 8. blocked_prompt_file_missing
+        pack_l1 = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready"},
+            "files": [{"path": "src/main.py", "source": "user_selected"}],
+            "blueprint": {"dependencies": []},
+            "accessIssues": []
+        }
+        wf_missing_file = {
+            "prompt": "Please edit src/auth.py to fix login",
+            "review_policy": {
+                "auto_approve_council": True,
+                "allow_l0_auto_approve": True
+            }
+        }
+        dec = self.orch._can_auto_approve_council(wf_missing_file, pack_l1)
+        self.assertFalse(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "blocked_prompt_file_missing")
+
+        # 9. allowed_policy_ok
+        wf_ok = {
+            "prompt": "Please edit src/main.py to fix login",
+            "review_policy": {
+                "auto_approve_council": True,
+                "allow_l0_auto_approve": True
+            }
+        }
+        dec = self.orch._can_auto_approve_council(wf_ok, pack_l1)
+        self.assertTrue(dec["allowed"])
+        self.assertEqual(dec["reasonCode"], "allowed_policy_ok")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1127,6 +1127,167 @@ def build_context_preview_response(
             }
             for s in suggested_files
         ]
+    if "explorerBrief" in context_pack:
+        result["explorerBrief"] = context_pack["explorerBrief"]
     if would_auto_include is not None:
         result["wouldAutoInclude"] = would_auto_include
     return result
+
+
+def build_context_audit_summary(context_pack: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a standard, structured audit summary of the target project context.
+
+    This is the SINGLE SOURCE OF TRUTH for context audits, risk flags, and status.
+    """
+    if context_pack is None:
+        return {
+            "contextPackVersion": 1,
+            "targetKey": "",
+            "status": "unavailable",
+            "highestLevel": "L0",
+            "sources": {
+                "blueprint": {
+                    "present": False,
+                    "files": 0,
+                    "truncated": False
+                },
+                "userSelected": {
+                    "files": 0,
+                    "chars": 0,
+                    "paths": []
+                },
+                "scoutAutoSelected": {
+                    "files": 0,
+                    "minScoutScore": 0,
+                    "paths": []
+                },
+                "explorerBrief": {
+                    "present": False,
+                    "status": None,
+                    "candidateFiles": 0,
+                    "commands": 0,
+                    "hitTimeout": False
+                }
+            },
+            "riskFlags": [],
+            "accessIssueCount": 0,
+            "promptIncluded": {
+                "blueprint": False,
+                "userSelectedFiles": False,
+                "scoutAutoSelectedFiles": False,
+                "explorerBrief": False
+            }
+        }
+
+    version = context_pack.get("version", CONTEXT_PACK_VERSION)
+    target_key = context_pack.get("targetKey", "")
+    access_issues = context_pack.get("accessIssues", [])
+
+    # 1. status state machine
+    pack_status = context_pack.get("status") or context_pack.get("summary", {}).get("status") or "ready"
+    if pack_status == "failed":
+        status = "failed"
+    elif access_issues:
+        status = "partial"
+    else:
+        status = "ready"
+
+    # 2. files parsing
+    files = context_pack.get("files", [])
+    user_files = [f for f in files if f.get("source") == "user_selected"]
+    scout_files = [f for f in files if f.get("source") == "scout_auto_selected"]
+
+    # 3. explorerBrief parsing
+    eb = context_pack.get("explorerBrief")
+    eb_present = eb is not None
+    eb_status = eb.get("status") if eb else None
+    eb_candidate_files = len(eb.get("candidateFiles", [])) if eb else 0
+    eb_commands = len(eb.get("commands", [])) if eb else 0
+    eb_hit_timeout = False
+    if eb:
+        eb_hit_timeout = eb.get("status") == "timeout" or eb.get("limits", {}).get("hitTimeout", False)
+
+    # 4. highestLevel logic
+    if eb_present and eb_status not in (None, "skipped"):
+        highest_level = "L3"
+    elif scout_files:
+        highest_level = "L2"
+    elif user_files:
+        highest_level = "L1"
+    else:
+        highest_level = "L0"
+
+    # 5. blueprint details
+    bp = context_pack.get("blueprint", {})
+    bp_present = bool(bp)
+    bp_files = 0
+    bp_truncated = False
+    if bp:
+        if bp.get("readme"):
+            bp_files += 1
+        deps = bp.get("dependencies", [])
+        bp_files += len(deps)
+        bp_truncated = any(dep.get("truncated") for dep in deps)
+
+    # 6. userSelected details
+    user_chars = sum(f.get("chars", len(f.get("content", ""))) for f in user_files)
+    user_paths = [f.get("path") for f in user_files]
+
+    # 7. scoutAutoSelected details
+    scout_min_score = min(f.get("scoutScore", 0) for f in scout_files) if scout_files else 0
+    scout_paths = [f.get("path") for f in scout_files]
+
+    # 8. riskFlags
+    risk_flags = []
+    if scout_files:
+        risk_flags.append("scout_auto_selected")
+    if eb_hit_timeout:
+        risk_flags.append("explorer_timeout")
+    if eb_status == "failed":
+        risk_flags.append("explorer_failed")
+    if access_issues:
+        risk_flags.append("access_issue")
+    if context_pack.get("summary", {}).get("truncated", False):
+        risk_flags.append("context_truncated")
+
+    # 9. promptIncluded
+    prompt_included = {
+        "blueprint": bool(bp.get("tree")),
+        "userSelectedFiles": len(user_files) > 0,
+        "scoutAutoSelectedFiles": len(scout_files) > 0,
+        "explorerBrief": eb_present and eb_status not in (None, "failed", "skipped"),
+    }
+
+    return {
+        "contextPackVersion": version,
+        "targetKey": target_key,
+        "status": status,
+        "highestLevel": highest_level,
+        "sources": {
+            "blueprint": {
+                "present": bp_present,
+                "files": bp_files,
+                "truncated": bp_truncated
+            },
+            "userSelected": {
+                "files": len(user_files),
+                "chars": user_chars,
+                "paths": user_paths
+            },
+            "scoutAutoSelected": {
+                "files": len(scout_files),
+                "minScoutScore": scout_min_score,
+                "paths": scout_paths
+            },
+            "explorerBrief": {
+                "present": eb_present,
+                "status": eb_status,
+                "candidateFiles": eb_candidate_files,
+                "commands": eb_commands,
+                "hitTimeout": eb_hit_timeout
+            }
+        },
+        "riskFlags": risk_flags,
+        "accessIssueCount": len(access_issues),
+        "promptIncluded": prompt_included
+    }

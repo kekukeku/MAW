@@ -387,21 +387,104 @@ def render_task_markdown(task_num, title, date_str, slug, objective, files_affec
 **執行者指示**：完成實作後，請將 `TASKS/task_{task_num}.md` 與 `AGENT_STATE.md` 的任務狀態改為 `UNDER_REVIEW`，而非 `COMPLETED`。
 """
 
-def _render_context_summary(context_pack):
+def _render_context_summary(context_pack, context_audit=None):
     """Render a concise markdown summary of the context pack for council markdown."""
     if not context_pack:
-        return "No target project context was provided to this council.\n"
+        return (
+            "## Target Project Context Audit\n\n"
+            "- **Context Status**: unavailable\n"
+            "- **Highest Level**: L0\n"
+            "- **Manual Files**: 0 files\n"
+            "- **Scout Auto-Selected**: 0 files\n"
+            "- **Explorer Brief**: unavailable\n"
+            "- **Risk Flags**: None\n"
+            "- **Auto-Approve Decision**: blocked_no_context (No target project context was provided)\n"
+        )
 
-    summary = context_pack.get("summary", {})
-    blueprint = context_pack.get("blueprint", {})
+    # Build or parse the audit summary
+    if not context_audit:
+        from project_context import build_context_audit_summary
+        audit_summary = build_context_audit_summary(context_pack)
+        auto_approve_policy = {
+            "allowed": False,
+            "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+            "riskFlags": audit_summary.get("riskFlags", [])
+        }
+    else:
+        audit_summary = context_audit.get("auditSummary")
+        auto_approve_policy = context_audit.get("autoApprovePolicy")
+        if not audit_summary:
+            from project_context import build_context_audit_summary
+            audit_summary = build_context_audit_summary(context_pack)
+        if not auto_approve_policy:
+            auto_approve_policy = {
+                "allowed": False,
+                "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+                "riskFlags": audit_summary.get("riskFlags", [])
+            }
+
+    # Wording for Highest Level:
+    level = audit_summary.get("highestLevel", "L0")
+    level_wording = level
+    if level == "L3":
+        level_wording = "L3 (Explorer Brief Loaded)"
+    elif level == "L2":
+        level_wording = "L2 (Scout Auto-Selected)"
+    elif level == "L1":
+        level_wording = "L1 (Manual)"
+    elif level == "L0":
+        level_wording = "L0 (Blueprint Only)"
+
+    # Explorer Brief summary:
+    eb_sources = audit_summary.get("sources", {}).get("explorerBrief", {})
+    if eb_sources.get("present"):
+        status = eb_sources.get("status", "unknown")
+        cand_files = eb_sources.get("candidateFiles", 0)
+        cmds = eb_sources.get("commands", 0)
+        eb_summary = f"{status} ({cand_files} files examined, {cmds} commands run)"
+    else:
+        eb_summary = "skipped"
+
+    # Risk Flags summary:
+    risk_flags_list = audit_summary.get("riskFlags", [])
+    risk_flags_str = ", ".join(risk_flags_list) if risk_flags_list else "None"
+
+    # Auto-Approve Decision:
+    allowed = auto_approve_policy.get("allowed", False)
+    reason_code = auto_approve_policy.get("reasonCode", "unknown")
+    
+    reason_mappings = {
+        "allowed_policy_ok": "Policy allowed and safety checks passed",
+        "blocked_policy_disabled": "Policy auto_approve_council is disabled",
+        "blocked_no_context": "No target project context was provided",
+        "blocked_l0_only": "Blueprint only is blocked by policy",
+        "blocked_scout_auto_selected": "Scout auto-selected files present",
+        "blocked_context_failed": "Context scan failed with exception",
+        "blocked_context_partial": "Context status is partial and policy blocks it",
+        "blocked_fatal_access": "Fatal permission denied in context pack",
+        "blocked_prompt_file_missing": "Prompt references file not found in context"
+    }
+    reason_desc = reason_mappings.get(reason_code, reason_code)
+    auto_approve_str = f"{reason_code} ({reason_desc})"
+
+    # Now, let's assemble the top summary:
     lines = [
-        f"- **Context pack version**: {context_pack.get('version', 'unknown')}",
-        f"- **Target Project Key**: {context_pack.get('targetKey', '')}",
-        f"- **Target Project Path**: {context_pack.get('targetPath', '')}",
-        f"- **Status**: {summary.get('status', 'unknown')}",
-        f"- **Included files**: {summary.get('includedFiles', 0)}",
-        f"- **Total chars**: {summary.get('totalChars', 0)}",
-        f"- **Truncated**: {summary.get('truncated', False)}",
+        "## Target Project Context Audit",
+        "",
+        f"- **Context Status**: {audit_summary.get('status', 'unknown')}",
+        f"- **Highest Level**: {level_wording}",
+        f"- **Manual Files**: {audit_summary.get('sources', {}).get('userSelected', {}).get('files', 0)} files",
+        f"- **Scout Auto-Selected**: {audit_summary.get('sources', {}).get('scoutAutoSelected', {}).get('files', 0)} file" + ("s" if audit_summary.get('sources', {}).get('scoutAutoSelected', {}).get('files', 0) != 1 else ""),
+        f"- **Explorer Brief**: {eb_summary}",
+        f"- **Risk Flags**: {risk_flags_str}",
+        f"- **Auto-Approve Decision**: {auto_approve_str}",
+        ""
+    ]
+
+    # Let's add details folding:
+    details_lines = [
+        "<details>",
+        "<summary><b>Provenance Details</b></summary>",
         "",
         "### Files Provided to Council",
         "",
@@ -409,36 +492,47 @@ def _render_context_summary(context_pack):
         "|------|--------|--------|-------------|-------|-----------|",
     ]
 
-    files = context_pack.get("files", [])
+    # Parse details about files
+    blueprint = context_pack.get("blueprint", {})
+    files = list(context_pack.get("files", []))
+    
+    # We rebuild list of files for the table
+    all_files_table = []
     if blueprint.get("readme"):
-        # README is part of blueprint.
         readme_record = next((d for d in blueprint.get("dependencies", []) if d.get("path", "").lower().startswith("readme")), None)
         if not readme_record:
-            # Synthetic README row if no explicit record.
-            files = [{"path": "README", "source": "blueprint", "chars": len(blueprint.get("readme")), "truncated": summary.get("truncated", False)}] + files
+            all_files_table.append({
+                "path": "README",
+                "source": "blueprint",
+                "chars": len(blueprint.get("readme")),
+                "truncated": context_pack.get("summary", {}).get("truncated", False)
+            })
 
     for dep in blueprint.get("dependencies", []):
-        files.append({
+        all_files_table.append({
             "path": dep.get("path", ""),
             "source": "blueprint",
             "chars": dep.get("chars", 0),
             "truncated": dep.get("truncated", False),
         })
 
-    if not files:
-        lines.append("| (none) | - | - | - | - | - |")
+    for f in files:
+        all_files_table.append(f)
+
+    if not all_files_table:
+        details_lines.append("| (none) | - | - | - | - | - |")
     else:
-        for f in files:
+        for f in all_files_table:
             score = f.get("scoutScore", "")
             method = f.get("selectionMethod", "") or "-"
             score_str = str(score) if score != "" else "-"
-            lines.append(
+            details_lines.append(
                 f"| {f.get('path', '')} | {f.get('source', '')} | {method} | {score_str} | {f.get('chars', 0)} | {f.get('truncated', False)} |"
             )
 
     explorer_brief = context_pack.get("explorerBrief")
     if explorer_brief:
-        lines.extend([
+        details_lines.extend([
             "",
             "### Explorer Research Brief (L3)",
             "",
@@ -447,7 +541,7 @@ def _render_context_summary(context_pack):
         ])
         limits = explorer_brief.get("limits", {})
         if limits:
-            lines.append(
+            details_lines.append(
                 f"- **Limits**: filesRead={limits.get('filesRead', 0)}/"
                 f"{limits.get('maxFilesRead', '?')}, "
                 f"charsRead={limits.get('charsRead', 0)}/"
@@ -456,33 +550,35 @@ def _render_context_summary(context_pack):
             )
         commands = explorer_brief.get("commands", [])
         if commands:
-            lines.append("- **Commands**:")
+            details_lines.append("- **Commands**:")
             for cmd in commands[:5]:
-                lines.append(
+                details_lines.append(
                     f"  - {cmd.get('kind', '?')}: query={cmd.get('query', '')!r}, "
                     f"results={cmd.get('resultCount', 0)}, tool={cmd.get('tool', '-')}"
                 )
         candidate_files = explorer_brief.get("candidateFiles", [])
         if candidate_files:
-            lines.append("- **Candidate files**:")
+            details_lines.append("- **Candidate files**:")
             for cf in candidate_files[:8]:
                 unread = " (not read)" if cf.get("contentIncluded") is False else ""
-                lines.append(f"  - `{cf.get('path', '')}`{unread}")
+                details_lines.append(f"  - `{cf.get('path', '')}`{unread}")
 
     access_issues = context_pack.get("accessIssues", [])
     if access_issues:
-        lines.extend(["", "### Access Issues", ""])
+        details_lines.extend(["", "### Access Issues", ""])
         for issue in access_issues[:20]:
-            lines.append(f"- `{issue.get('path', '')}`: {issue.get('reason', '')}")
+            details_lines.append(f"- `{issue.get('path', '')}`: {issue.get('reason', '')}")
         if len(access_issues) > 20:
-            lines.append(f"- ... and {len(access_issues) - 20} more")
+            details_lines.append(f"- ... and {len(access_issues) - 20} more")
 
+    details_lines.extend(["", "</details>", ""])
+    lines.extend(details_lines)
     return "\n".join(lines)
 
 
-def render_council_markdown(task_num, title, date_str, user_request, models_list, stage1_text, stage2_text, aggregate_rankings_text, stage3_text, export_options_text, context_pack=None):
+def render_council_markdown(task_num, title, date_str, user_request, models_list, stage1_text, stage2_text, aggregate_rankings_text, stage3_text, export_options_text, context_pack=None, context_audit=None):
     """Generate the readable meeting transcript markdown."""
-    context_summary_text = _render_context_summary(context_pack)
+    context_summary_text = _render_context_summary(context_pack, context_audit)
     return f"""# Council Meeting Record: TASK-{task_num}
 
 - **Council ID**: council_{task_num}
@@ -507,11 +603,7 @@ def render_council_markdown(task_num, title, date_str, user_request, models_list
 
 ---
 
-## 3. Target Project Context
-
 {context_summary_text}
-
----
 
 ## 4. Stage 1 - Individual Responses
 
@@ -684,7 +776,22 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             stage3_text=stage3.get("response", ""),
             export_options_text=export_opts,
             context_pack=context_pack,
+            context_audit=conv_data.get("context_audit"),
         )
+        
+        context_audit = conv_data.get("context_audit") or {}
+        audit_summary = context_audit.get("auditSummary")
+        if not audit_summary:
+            from project_context import build_context_audit_summary
+            audit_summary = build_context_audit_summary(context_pack)
+        
+        auto_approve_policy = context_audit.get("autoApprovePolicy")
+        if not auto_approve_policy:
+            auto_approve_policy = {
+                "allowed": False,
+                "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+                "riskFlags": audit_summary.get("riskFlags", [])
+            }
         
         council_json = {
             "schemaVersion": 1,
@@ -703,6 +810,8 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
             "stage3": stage3,
             "exportOptions": export_opts,
             "contextPack": context_pack,
+            "contextAuditSummary": audit_summary,
+            "autoApprovePolicy": auto_approve_policy,
             "provenance": {
                 "source": "Karpathy LLM Council",
                 "stage": "Stage 3 Chairman Synthesis",

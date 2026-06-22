@@ -577,6 +577,74 @@ class TestProjectContext(unittest.TestCase):
         auto = [f for f in pack["files"] if f.get("source") == "scout_auto_selected"]
         self.assertEqual(len(auto), 1)
 
+    def test_build_context_audit_summary_none(self):
+        summary = pc.build_context_audit_summary(None)
+        self.assertEqual(summary["status"], "unavailable")
+        self.assertEqual(summary["highestLevel"], "L0")
+        self.assertFalse(summary["sources"]["blueprint"]["present"])
+
+    def test_build_context_audit_summary_l0_l1_l2_l3(self):
+        # L0 Blueprint
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "blueprint": {
+                "tree": "some tree",
+                "readme": "README text",
+                "dependencies": []
+            },
+            "files": []
+        }
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["highestLevel"], "L0")
+        self.assertTrue(summary["sources"]["blueprint"]["present"])
+        self.assertEqual(summary["sources"]["blueprint"]["files"], 1)
+
+        # L1 User Selected
+        pack["files"] = [{"path": "src/main.py", "source": "user_selected", "chars": 100}]
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["highestLevel"], "L1")
+        self.assertEqual(summary["sources"]["userSelected"]["files"], 1)
+
+        # L2 Scout Auto Selected
+        pack["files"] = [{"path": "src/auth.py", "source": "scout_auto_selected", "scoutScore": 85}]
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["highestLevel"], "L2")
+        self.assertEqual(summary["sources"]["scoutAutoSelected"]["files"], 1)
+        self.assertEqual(summary["sources"]["scoutAutoSelected"]["minScoutScore"], 85)
+
+        # L3 Explorer Brief
+        pack["explorerBrief"] = {"status": "ready", "candidateFiles": [1, 2], "commands": [1]}
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["highestLevel"], "L3")
+        self.assertEqual(summary["sources"]["explorerBrief"]["candidateFiles"], 2)
+        self.assertEqual(summary["sources"]["explorerBrief"]["commands"], 1)
+
+    def test_build_context_audit_summary_status_and_risks(self):
+        pack = {
+            "version": 1,
+            "targetKey": "test",
+            "summary": {"status": "ready", "truncated": True},
+            "accessIssues": [{"path": "secret.txt", "reason": "excluded_secret"}],
+            "files": [{"path": "src/auth.py", "source": "scout_auto_selected", "scoutScore": 90}],
+            "explorerBrief": {
+                "status": "timeout",
+                "limits": {"hitTimeout": True},
+                "candidateFiles": []
+            }
+        }
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["status"], "partial")
+        self.assertIn("scout_auto_selected", summary["riskFlags"])
+        self.assertIn("explorer_timeout", summary["riskFlags"])
+        self.assertIn("access_issue", summary["riskFlags"])
+        self.assertIn("context_truncated", summary["riskFlags"])
+
+        # failed status propagation
+        pack["summary"]["status"] = "failed"
+        summary = pc.build_context_audit_summary(pack)
+        self.assertEqual(summary["status"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()
