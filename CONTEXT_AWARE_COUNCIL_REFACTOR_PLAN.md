@@ -1340,9 +1340,288 @@ Post  6f+  Gate #1 re-explore hint, PLANNING/ json export
 
 ---
 
-## 13. 測試計劃
+## 13. Phase 6g - Context Governance / Audit Hardening
 
-### 13.1 Unit Tests
+**狀態**：待實作。前置：6a L0、6d L1、6e Scout、6f Explorer 均已落地。
+
+### 13.0 建議是否做
+
+**建議做，而且應該先做，不急著新增更強的 context agent。**
+
+6a-6f 已經把 Council 從 blind prompt-only 升級成 L0/L1/L2/L3 context-aware workflow；6g 的目標不是再增加資訊來源，而是把已經存在的 context provenance、policy gate、export schema、UI wording 與測試標準收斂成長期可維護的治理層。
+
+一句話：
+
+```text
+6g 讓「Council 看了什麼、為什麼能自動批准、哪些 context 不可信」變成可檢查、可回放、可測試的固定契約。
+```
+
+### 13.1 6g 範圍
+
+6g 只做 governance / audit hardening：
+
+- 統一 context provenance schema。
+- 統一 auto-approve policy reason code。
+- 統一 Gate #1 / export / JSON 的 context audit summary。
+- 補齊 L0/L1/L2/L3 組合測試。
+- 補一份 manual smoke checklist，確保 UI 沒有讓使用者誤會自動選檔或 Explorer brief 的權重。
+
+6g 不做：
+
+- 不新增 L4 agent。
+- 不新增 embedding / vector database。
+- 不讓 Explorer 或 Scout 直接寫 target project。
+- 不改 Council 主流程。
+- 不改使用者啟動任務的主要 UX。
+- 不新增 auto-approve 寬鬆模式。
+- 不把 Explorer brief 當 source of truth。
+
+### 13.2 核心問題
+
+現在 context 能力已經很多，風險從「Council 盲眼」轉成「Council 看了很多東西，但審計者不容易快速判斷哪些內容真的進了 prompt、哪些只是建議、哪些曾被拒絕」。
+
+6g 要解決四個問題：
+
+| 問題 | 6g 目標 |
+|------|---------|
+| provenance 分散 | conversation / export / Gate #1 使用同一套 audit summary |
+| auto-approve 原因不夠機械化 | 每次 allow / block 都有穩定 reason code |
+| L1 / Scout / Explorer 權重容易混淆 | UI 與 prompt 都明確標註 source of truth 層級 |
+| 測試偏單點 | 補 cross-layer regression，避免 6d/6e/6f 互相踩線 |
+
+### 13.3 Context Audit Summary Schema
+
+新增或集中一個 helper，例如：
+
+```python
+build_context_audit_summary(context_pack: dict) -> dict
+```
+
+輸出建議：
+
+```json
+{
+  "contextPackVersion": 1,
+  "targetKey": "string",
+  "status": "ready|partial|failed|unavailable",
+  "highestLevel": "L0|L1|L2|L3",
+  "sources": {
+    "blueprint": {
+      "present": true,
+      "files": 3,
+      "truncated": false
+    },
+    "userSelected": {
+      "files": 2,
+      "chars": 12000,
+      "paths": ["src/app.py"]
+    },
+    "scoutAutoSelected": {
+      "files": 3,
+      "minScore": 0.62,
+      "paths": ["src/auth.py"]
+    },
+    "explorerBrief": {
+      "present": true,
+      "status": "ready",
+      "candidateFiles": 5,
+      "commands": 2,
+      "hitTimeout": false
+    }
+  },
+  "riskFlags": [
+    "l0_only",
+    "scout_auto_selected",
+    "explorer_timeout",
+    "context_truncated",
+    "access_issues_present"
+  ],
+  "accessIssueCount": 0,
+  "promptIncluded": {
+    "blueprint": true,
+    "userSelectedFiles": true,
+    "scoutAutoSelectedFiles": true,
+    "explorerBrief": true
+  }
+}
+```
+
+原則：
+
+- `riskFlags` 必須穩定，適合測試與未來 UI 顯示。
+- `paths` 只使用 target-root-relative path。
+- 不重複塞完整 file content。
+- audit summary 是 metadata，不取代完整 `context_pack`。
+- 若 `context_pack=None`，summary 必須明確標 `status="unavailable"`。
+
+### 13.4 Auto-Approve Policy Reason Codes
+
+整理 `_can_auto_approve_council()`，讓它回傳穩定、可測的結果，例如：
+
+```python
+{
+  "allowed": false,
+  "reasonCode": "blocked_l0_only",
+  "reason": "Context pack has only L0 blueprint; allow_l0_auto_approve is false.",
+  "riskFlags": ["l0_only"]
+}
+```
+
+建議 reason code：
+
+| Code | 意義 |
+|------|------|
+| `allowed_policy_ok` | policy 允許自動批准 |
+| `blocked_no_context` | 沒有 context pack 或 context unavailable |
+| `blocked_l0_only` | 只有 L0 blueprint，未允許 L0 auto-approve |
+| `blocked_scout_auto_selected` | 有 Scout auto-selected 檔案，未允許 scout auto-approve |
+| `blocked_context_failed` | context gathering failed |
+| `blocked_context_truncated` | context 超預算或重要內容被截斷（若 policy 不允許） |
+| `blocked_access_issues` | accessIssues 存在且 policy 不允許 |
+
+6g 不需要改變現有 default policy；只把判斷結果變穩定、可審計。
+
+### 13.5 Gate #1 顯示規則
+
+Gate #1 context 區塊應呈現一個 compact audit view：
+
+- Target key。
+- Highest context level。
+- Manual files count。
+- Scout auto-selected count。
+- Explorer status。
+- Access issues count。
+- Risk flags。
+- Auto-approve decision / blocked reason。
+
+顯示文字要避免誤導：
+
+| 來源 | UI 文案 |
+|------|---------|
+| L1 manual | User-selected source files |
+| L2 scout auto | Scout auto-selected files |
+| L3 explorer | Explorer research brief — not source of truth |
+| access issue | Skipped / blocked context items |
+
+6g 不做大型 redesign；只調整現有 context summary / modal / export 用語，保持目前 UX 感覺。
+
+### 13.6 Export / JSON Contract
+
+`PLANNING/council_NNN.json` 應包含：
+
+```json
+{
+  "contextPack": {},
+  "contextAuditSummary": {},
+  "autoApprovePolicy": {
+    "allowed": false,
+    "reasonCode": "blocked_scout_auto_selected",
+    "riskFlags": ["scout_auto_selected"]
+  }
+}
+```
+
+Markdown export 應新增或整理：
+
+```text
+## Target Project Context Audit
+
+- Context status: ready
+- Highest level: L3
+- Manual files: 2
+- Scout auto-selected: 3
+- Explorer: ready
+- Risk flags: scout_auto_selected
+- Auto-approve: blocked_scout_auto_selected
+```
+
+原則：
+
+- JSON 是 machine-readable source。
+- Markdown 是 reviewer-friendly summary。
+- 不把完整 context content 複製多份。
+- 保持 backward compatibility：舊 conversation 沒有 audit summary 時可 fallback 現有 rendering。
+
+### 13.7 實作切分
+
+```text
+6g-A  project_context.py audit helper + unit tests
+6g-B  auto-approve decision object + reason code tests
+6g-C  export.py markdown/json audit summary
+6g-D  Gate #1 / context bar wording polish
+6g-E  cross-layer regression tests + manual smoke checklist
+```
+
+建議順序：6g-A → 6g-B → 6g-C → 6g-D → 6g-E。
+
+6g-A/6g-B 可以先 merge，因為它們主要是後端契約；6g-D 只做文字與小型 UI polish。
+
+### 13.8 測試計劃
+
+新增或更新：
+
+- `test_project_context.py`
+- `test_orchestrator.py`
+- `test_export.py`
+- `test_context_api.py`
+- `test_explorer.py`
+
+必測：
+
+| # | 測試 |
+|---|------|
+| 1 | L0 only → `riskFlags=["l0_only"]` |
+| 2 | L1 manual files → highestLevel 至少 L1，manual count 正確 |
+| 3 | Scout auto-selected → riskFlags 含 `scout_auto_selected` |
+| 4 | Explorer ready → audit summary 含 status / command count / candidate count |
+| 5 | Explorer timeout → riskFlags 含 `explorer_timeout`，不阻斷 context pack |
+| 6 | accessIssues 存在 → accessIssueCount 正確 |
+| 7 | context_pack=None → status unavailable，auto-approve blocked |
+| 8 | `_can_auto_approve_council()` reason code 穩定 |
+| 9 | council markdown export 含 Target Project Context Audit |
+| 10 | council JSON 含 contextAuditSummary |
+
+手動 smoke：
+
+1. L0 only project：Gate #1 顯示 L0 only，auto-approve blocked。
+2. 手選檔案：chip / Gate #1 / export 都標 user-selected。
+3. Scout auto include：chip / Gate #1 / export 都標 scout auto-selected，auto-approve blocked unless policy explicitly allows。
+4. Explorer enabled：Gate #1 顯示 research brief，但文案明確不是 source of truth。
+5. Explorer timeout / failed：Council 仍可進 Gate #1，brief status 顯示 timeout / failed。
+
+### 13.9 驗收標準
+
+- 所有 context-aware Council 都能產出 `contextAuditSummary`。
+- Auto-approve allow/block 都有 stable `reasonCode`。
+- Gate #1、Markdown、JSON 三者對同一個 context pack 的摘要一致。
+- L1 user-selected、L2 scout auto-selected、L3 explorer brief 的權重與角色不混淆。
+- Explorer timeout / failed 不會被渲染成可用 context。
+- 測試覆蓋 L0/L1/L2/L3 與 auto-approve 的交互。
+- 不新增新 agent 能力，不改主流程，不破壞現有 UI 體感。
+
+### 13.10 給小O的執行提示
+
+請把 6g 當成「合約收斂」，不要當成「功能擴張」。
+
+優先做：
+
+1. 先建立 audit summary helper，不要在多個檔案各自拼 summary。
+2. 再把 auto-approve result 改成 decision object。
+3. 最後接 export / UI wording。
+
+避免做：
+
+- 不要改 context selection algorithm。
+- 不要改 Scout score。
+- 不要改 Explorer 搜尋策略。
+- 不要新增 background refresh。
+- 不要做新的 preview modal。
+
+---
+
+## 14. 測試計劃
+
+### 14.1 Unit Tests
 
 Phase 6a 新增測試：
 
@@ -1385,7 +1664,7 @@ Phase 6f 新增：
 
 - `test_explorer.py`（見 §12 Phase 6f.12）
 
-### 13.2 Council Tests
+### 14.2 Council Tests
 
 更新：
 
@@ -1403,7 +1682,7 @@ Phase 6f 新增：
 - `LoopOrchestrator._run_council_task()` gathers context before calling `run_council()`。
 - interrupted `COUNCIL_RUNNING` workflows can safely rebuild context on resume。
 
-### 13.3 Export Tests
+### 14.3 Export Tests
 
 更新：
 
@@ -1416,7 +1695,7 @@ Phase 6f 新增：
 - task markdown files affected can be derived from context pack。
 - no global `MAW_workflow/CONTEXT.json` is required for Phase 6a。
 
-### 13.4 UI Smoke
+### 14.4 UI Smoke
 
 Phase 6a 不要求 UI smoke，因為不新增 UI 控制。
 
@@ -1429,7 +1708,7 @@ Phase 6b+ 手動或 Playwright：
 
 ---
 
-## 14. 風險與對策
+## 15. 風險與對策
 
 | 風險 | 影響 | 對策 |
 |------|------|------|
@@ -1448,7 +1727,7 @@ Phase 6b+ 手動或 Playwright：
 
 ---
 
-## 15. 最小可行改造範圍
+## 16. 最小可行改造範圍
 
 如果只做最小但有意義的修正，應做：
 
@@ -1467,7 +1746,7 @@ Phase 6b+ 手動或 Playwright：
 
 ---
 
-## 16. 建議最終排序
+## 17. 建議最終排序
 
 ```text
 P0: 6a L0 Blueprint + Prompt Injection + Provenance + Auto-approve Guard
@@ -1476,6 +1755,7 @@ P1: 6c Context Preview API + Minimal Context Bar
 P2: 6d Manual Context Files
 P2: 6e Scout Auto Recommendation
 P3: 6f Explorer Brief
+P3: 6g Context Governance / Audit Hardening
 ```
 
 最重要的取捨：
@@ -1486,7 +1766,7 @@ P3: 6f Explorer Brief
 
 ---
 
-## 17. 完成定義
+## 18. 完成定義
 
 這次大改造完成後，MAW 應滿足：
 
