@@ -189,6 +189,33 @@ class TestProjectContext(unittest.TestCase):
         self.assertIn("Context Boundaries", envelope)
         self.assertIn("Implement feature X", envelope)
 
+    def test_prompt_envelope_includes_explorer_brief_when_ready(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Fix token expiry")
+        pack["explorerBrief"] = {
+            "status": "ready",
+            "summary": "Explorer examined 2 candidate files.",
+            "candidateFiles": [
+                {
+                    "path": "src/auth.py",
+                    "contentIncluded": False,
+                    "excerpt": "",
+                    "truncated": False,
+                },
+            ],
+        }
+        envelope = pc.build_prompt_envelope("Fix token expiry", pack)
+        self.assertIn("Explorer Research Brief", envelope)
+        self.assertIn("NOT source of truth", envelope)
+        self.assertIn("content not read", envelope)
+
+    def test_prompt_envelope_skips_failed_explorer_brief(self):
+        with self._load_targets_patch():
+            pack = pc.build_context_pack("test", "Fix token expiry")
+        pack["explorerBrief"] = {"status": "failed", "summary": "should not appear"}
+        envelope = pc.build_prompt_envelope("Fix token expiry", pack)
+        self.assertNotIn("Explorer Research Brief", envelope)
+
     def test_compact_digest(self):
         with self._load_targets_patch():
             pack = pc.build_context_pack("test", "Implement feature X")

@@ -378,6 +378,62 @@ class TestOrchestrator(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_explorer_failure_does_not_block_council(self):
+        """Explorer exception should not prevent council from running."""
+        async def _run():
+            with self._targets_patch(), patch.object(orch_mod, "build_context_pack", return_value={
+                "version": 1, "targetKey": "test", "level": "L0",
+                "summary": {"status": "ready", "includedFiles": 1, "totalChars": 100, "truncated": False},
+                "blueprint": {"tree": "t", "readme": "", "dependencies": []},
+                "files": [], "accessIssues": [],
+            }), patch("explorer.run_explorer_brief", side_effect=RuntimeError("boom")), \
+                 patch.object(orch_mod, "run_council", return_value={
+                "id": "conv_explorer_fail",
+                "messages": [{"role": "assistant", "content": "test", "stage1": [], "stage2": [], "stage3": {"response": "test"}, "metadata": {}}],
+            }):
+                wf = await self.orch.start_council(
+                    prompt="Implement feature X", target_key="test",
+                    generate_explorer=True,
+                    explorer_preview_key={"targetKey": "test", "prompt": "Implement feature X"},
+                    mock=True,
+                )
+                await asyncio.sleep(0.5)
+                wf2 = self.orch.get_workflow_by_conversation("conv_explorer_fail")
+                self.assertIsNotNone(wf2)
+                self.assertEqual(wf2["state"], WorkflowState.COUNCIL_PENDING_APPROVAL.value)
+
+        asyncio.run(_run())
+
+    def test_explorer_skipped_without_preview_key(self):
+        """Missing explorerPreviewKey should skip explorer, not run it."""
+        async def _run():
+            explorer_called = {"value": False}
+
+            def _fake_explorer(*args, **kwargs):
+                explorer_called["value"] = True
+                return {"status": "ready", "summary": "x", "limits": {"filesRead": 1}}
+
+            with self._targets_patch(), patch.object(orch_mod, "build_context_pack", return_value={
+                "version": 1, "targetKey": "test", "level": "L0",
+                "summary": {"status": "ready", "includedFiles": 1, "totalChars": 100, "truncated": False},
+                "blueprint": {"tree": "t", "readme": "", "dependencies": []},
+                "files": [], "accessIssues": [],
+            }), patch("explorer.run_explorer_brief", side_effect=_fake_explorer), \
+                 patch.object(orch_mod, "run_council", return_value={
+                "id": "conv_explorer_skip",
+                "messages": [{"role": "assistant", "content": "test", "stage1": [], "stage2": [], "stage3": {"response": "test"}, "metadata": {}}],
+            }):
+                await self.orch.start_council(
+                    prompt="Implement feature X", target_key="test",
+                    generate_explorer=True,
+                    explorer_preview_key=None,
+                    mock=True,
+                )
+                await asyncio.sleep(0.5)
+                self.assertFalse(explorer_called["value"])
+
+        asyncio.run(_run())
+
     def test_allow_scout_auto_approve_enabled(self):
         """G10: when allow_scout_auto_approve=True, auto-approve proceeds."""
         async def _run():

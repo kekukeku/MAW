@@ -436,6 +436,39 @@ def _render_context_summary(context_pack):
                 f"| {f.get('path', '')} | {f.get('source', '')} | {method} | {score_str} | {f.get('chars', 0)} | {f.get('truncated', False)} |"
             )
 
+    explorer_brief = context_pack.get("explorerBrief")
+    if explorer_brief:
+        lines.extend([
+            "",
+            "### Explorer Research Brief (L3)",
+            "",
+            f"- **Status**: {explorer_brief.get('status', 'unknown')}",
+            f"- **Summary**: {explorer_brief.get('summary', '') or '(none)'}",
+        ])
+        limits = explorer_brief.get("limits", {})
+        if limits:
+            lines.append(
+                f"- **Limits**: filesRead={limits.get('filesRead', 0)}/"
+                f"{limits.get('maxFilesRead', '?')}, "
+                f"charsRead={limits.get('charsRead', 0)}/"
+                f"{limits.get('maxCharsRead', '?')}, "
+                f"timeout={limits.get('hitTimeout', False)}"
+            )
+        commands = explorer_brief.get("commands", [])
+        if commands:
+            lines.append("- **Commands**:")
+            for cmd in commands[:5]:
+                lines.append(
+                    f"  - {cmd.get('kind', '?')}: query={cmd.get('query', '')!r}, "
+                    f"results={cmd.get('resultCount', 0)}, tool={cmd.get('tool', '-')}"
+                )
+        candidate_files = explorer_brief.get("candidateFiles", [])
+        if candidate_files:
+            lines.append("- **Candidate files**:")
+            for cf in candidate_files[:8]:
+                unread = " (not read)" if cf.get("contentIncluded") is False else ""
+                lines.append(f"  - `{cf.get('path', '')}`{unread}")
+
     access_issues = context_pack.get("accessIssues", [])
     if access_issues:
         lines.extend(["", "### Access Issues", ""])

@@ -744,6 +744,7 @@
       if (targetSel) {
         targetSel.addEventListener('change', () => {
           checkStaleAndCleanup();
+          checkExplorerStale();
           refreshContextBarIfPreviewed();
           refreshAutoIncludeHint();
         });
@@ -752,6 +753,7 @@
       if (promptEl) {
         promptEl.addEventListener('input', () => {
           checkStaleAndCleanup();
+          checkExplorerStale();
           refreshContextBarIfPreviewed();
           refreshAutoIncludeHint();
         });
@@ -761,6 +763,7 @@
     async function startCouncil() {
       checkStaleAndCleanup();
       if (!startCouncilGuard()) return;
+      if (!startExplorerGuard()) return;
       const prompt = document.getElementById('prompt').value.trim();
       if (!prompt) return alert('請填寫任務需求');
       const models = selectedModels();
@@ -785,7 +788,9 @@
         minScoutScore: 40,
         scoutPreviewKey: lastPreviewKey.targetKey ? { targetKey: lastPreviewKey.targetKey, prompt: lastPreviewKey.prompt } : undefined,
         generateExplorerBrief: document.getElementById('generate-explorer')?.checked || false,
-        explorerPreviewKey: lastPreviewKey.targetKey ? { targetKey: lastPreviewKey.targetKey, prompt: lastPreviewKey.prompt } : undefined,
+        explorerPreviewKey: lastExplorerPreviewKey.targetKey
+          ? { targetKey: lastExplorerPreviewKey.targetKey, prompt: lastExplorerPreviewKey.prompt }
+          : undefined,
       };
       if (config.mockMode) body.mock = true;
       const res = await fetch(`${API}/api/maw/conversations/new`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -1082,9 +1087,16 @@
       const autoHint = wouldCount
         ? ` · 將自動納入 ${wouldCount} 份 Scout 推薦`
         : (autoIncludeOn && !areSuggestionsLive() ? ' · ⚠ 自動納入待重新預覽' : '');
+      const explorerOn = document.getElementById('generate-explorer')?.checked;
+      const explorerLive = isExplorerBriefLive();
+      const explorerHint = explorerOn
+        ? (explorerLive && lastExplorerBrief
+          ? ` · Explorer brief ${lastExplorerBrief.status || 'ready'}`
+          : ' · ⚠ Explorer 待重新產生')
+        : '';
 
-      bar.className = 'context-bar ' + ((isStale && suggested.length) || (autoIncludeOn && !areSuggestionsLive()) ? 'warning' : klass);
-      bar.innerHTML = `專案感知背景: ${statusText}${scoutHint}${autoHint} · <a onclick="previewContext(); return false;">[預覽 Context]</a>`;
+      bar.className = 'context-bar ' + ((isStale && suggested.length) || (autoIncludeOn && !areSuggestionsLive()) || (explorerOn && !explorerLive) ? 'warning' : klass);
+      bar.innerHTML = `專案感知背景: ${statusText}${scoutHint}${autoHint}${explorerHint} · <a onclick="previewContext(); return false;">[預覽 Context]</a>`;
     }
 
     function renderContextAlert(pack) {
@@ -1245,27 +1257,103 @@
 
     // --- Explorer toggle ---
     let lastExplorerBrief = null;
+    let lastExplorerPreviewKey = { targetKey: '', prompt: '' };
 
     function loadExplorerPref() {
-      try { return localStorage.getItem('maw_generate_explorer') === 'true'; } catch (e) { return false; }
+      try {
+        if (localStorage.getItem('maw_explorer_brief') != null) {
+          return localStorage.getItem('maw_explorer_brief') === 'true';
+        }
+        return localStorage.getItem('maw_generate_explorer') === 'true';
+      } catch (e) { return false; }
     }
 
     function saveExplorerPref() {
       const cb = document.getElementById('generate-explorer');
-      try { localStorage.setItem('maw_generate_explorer', String(cb?.checked || false)); } catch (e) {}
+      try { localStorage.setItem('maw_explorer_brief', String(cb?.checked || false)); } catch (e) {}
+      refreshContextBarIfPreviewed();
+    }
+
+    function getCurrentExplorerContext() {
+      return {
+        targetKey: document.getElementById('target-key')?.value || '',
+        prompt: (document.getElementById('prompt')?.value || '').trim(),
+      };
+    }
+
+    function isExplorerBriefLive() {
+      if (!lastExplorerPreviewKey.targetKey || !lastExplorerPreviewKey.prompt) return false;
+      const current = getCurrentExplorerContext();
+      return lastExplorerPreviewKey.targetKey === current.targetKey
+        && lastExplorerPreviewKey.prompt === current.prompt;
+    }
+
+    function checkExplorerStale() {
+      const current = getCurrentExplorerContext();
+      if (lastExplorerPreviewKey.targetKey && lastExplorerPreviewKey.targetKey !== current.targetKey) {
+        lastExplorerBrief = null;
+        lastExplorerPreviewKey = { targetKey: '', prompt: '' };
+        const status = document.getElementById('explorer-status');
+        if (status) status.textContent = '';
+      }
+    }
+
+    function startExplorerGuard() {
+      const cb = document.getElementById('generate-explorer');
+      if (!cb || !cb.checked) return true;
+      if (!lastExplorerPreviewKey.targetKey || !lastExplorerPreviewKey.prompt) {
+        alert('請先點擊 [▶ 預覽 Explorer] 產生調研簡報，再啟用 Explorer。');
+        return false;
+      }
+      const current = getCurrentExplorerContext();
+      if (lastExplorerPreviewKey.targetKey !== current.targetKey
+          || lastExplorerPreviewKey.prompt !== current.prompt) {
+        alert('Explorer 簡報已過期（專案或需求已變更），請重新點擊 [▶ 預覽 Explorer]。');
+        return false;
+      }
+      return true;
+    }
+
+    function renderExplorerBriefHtml(brief) {
+      if (!brief) return '';
+      let html = '<h4>Explorer 調研簡報 (L3)</h4>';
+      html += `<p><strong>狀態:</strong> ${escapeHtml(brief.status || 'unknown')}</p>`;
+      if (brief.summary) html += `<p><strong>摘要:</strong> ${escapeHtml(brief.summary)}</p>`;
+      const candidates = brief.candidateFiles || [];
+      if (candidates.length) {
+        html += '<table><tr><th>路徑</th><th>已讀</th><th>原因</th></tr>';
+        candidates.forEach(cf => {
+          const read = cf.contentIncluded === false ? '否' : '是';
+          html += `<tr><td>${escapeHtml(cf.path || '')}</td><td>${read}</td><td>${escapeHtml(cf.reason || '-')}</td></tr>`;
+        });
+        html += '</table>';
+      }
+      const commands = brief.commands || [];
+      if (commands.length) {
+        html += '<p><strong>指令紀錄:</strong></p><ul>';
+        commands.forEach(cmd => {
+          html += `<li>${escapeHtml(cmd.kind || '')}: ${escapeHtml(cmd.query || '')} `
+            + `(${escapeHtml(String(cmd.resultCount ?? 0))} hits, ${escapeHtml(cmd.tool || '-')})</li>`;
+        });
+        html += '</ul>';
+      }
+      return html;
     }
 
     async function previewExplorer() {
       const status = document.getElementById('explorer-status');
       status.textContent = '掃描中...';
       status.style.color = 'var(--accent)';
-      const targetKey = document.getElementById('target-key')?.value || '';
-      const prompt = document.getElementById('prompt')?.value || '';
+      const current = getCurrentExplorerContext();
       try {
         const res = await fetch(`${API}/api/maw/context/explorer/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetKey, prompt, timeoutSeconds: 10 }),
+          body: JSON.stringify({
+            targetKey: current.targetKey,
+            prompt: current.prompt,
+            timeoutSeconds: 10,
+          }),
         });
         if (!res.ok) {
           status.textContent = 'Explorer 失敗';
@@ -1274,10 +1362,12 @@
         }
         const brief = await res.json();
         lastExplorerBrief = brief;
+        lastExplorerPreviewKey = { targetKey: current.targetKey, prompt: current.prompt };
         const st = brief.status || 'unknown';
         const files = brief.limits?.filesRead || 0;
         status.textContent = `狀態: ${st} · ${files} 個候選檔案`;
-        status.style.color = st === 'ready' ? 'var(--ok)' : 'var(--warn)';
+        status.style.color = (st === 'ready' || st === 'partial') ? 'var(--ok)' : 'var(--warn)';
+        refreshContextBarIfPreviewed();
       } catch (e) {
         status.textContent = '網路錯誤';
         status.style.color = 'var(--err)';
@@ -1313,6 +1403,10 @@
           html += `<tr><td>${escapeHtml(s.path)}</td><td>${escapeHtml(String(s.score))}</td><td>${escapeHtml(reasons || '-')}</td></tr>`;
         });
         html += '</table>';
+      }
+
+      if (lastExplorerBrief && isExplorerBriefLive()) {
+        html += renderExplorerBriefHtml(lastExplorerBrief);
       }
 
       const suggested = pack.suggestedFiles || [];

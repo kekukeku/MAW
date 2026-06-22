@@ -888,7 +888,7 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
     # ---- P2.5: Explorer Research Brief (L3) ----
     explorer_str = ""
     explorer_brief = context_pack.get("explorerBrief")
-    if explorer_brief:
+    if explorer_brief and explorer_brief.get("status") in ("ready", "partial"):
         exp_lines = [
             "## Explorer Research Brief (L3 — NOT source of truth)",
             "- This section is an automated read-only research summary.",
@@ -906,7 +906,8 @@ def build_prompt_envelope(prompt: str, context_pack: dict[str, Any] | None) -> s
                 path = cf.get("path", "")
                 excerpt = cf.get("excerpt", "")
                 truncated = " (truncated)" if cf.get("truncated") else ""
-                exp_lines.append(f"- {path}{truncated}:")
+                unread = " [content not read]" if cf.get("contentIncluded") is False else ""
+                exp_lines.append(f"- {path}{truncated}{unread}:")
                 if excerpt:
                     exp_lines.append(f"  - Excerpt: `{excerpt[:200]}`")
             exp_lines.append("")

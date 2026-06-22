@@ -21,8 +21,8 @@ from maw_paths import get_project_root
 from project_context import (
     ContextTargetError,
     DEFAULT_POLICY,
+    _apply_gitignore_filter,
     _is_always_excluded,
-    _batch_git_ignored,
 )
 from scout import scout_suggestions
 
@@ -115,16 +115,27 @@ def _search_with_rg(
     return lines[:max_results], duration
 
 
+def _is_safe_search_file(fp: Path, root: Path, policy: dict[str, Any]) -> bool:
+    """Return True if a file may be searched by Explorer."""
+    excluded, _ = _is_always_excluded(fp, root)
+    if excluded:
+        return False
+    filtered, _ = _apply_gitignore_filter([fp], root, policy)
+    return bool(filtered)
+
+
 def _search_with_python(
     query: str,
     directories: list[Path],
     root: Path,
     max_results: int = 50,
+    policy: dict[str, Any] | None = None,
 ) -> tuple[list[str], float]:
     """Search using Python os.walk + re.search (fallback when rg unavailable)."""
     if not directories:
         return [], 0.0
 
+    effective_policy = {**DEFAULT_POLICY, **(policy or {})}
     t0 = datetime.now(timezone.utc)
     results: list[str] = []
     pattern = re.compile(re.escape(query), re.IGNORECASE)
@@ -135,13 +146,25 @@ def _search_with_python(
             break
         if not directory.is_dir():
             continue
-        for dirpath, _dirnames, filenames in os.walk(directory):
+        for dirpath, dirnames, filenames in os.walk(directory, topdown=True):
             if len(results) >= max_results:
                 break
+            current = Path(dirpath)
+            to_prune = []
+            for d in list(dirnames):
+                dir_full = current / d
+                excluded, _ = _is_always_excluded(dir_full, root)
+                if excluded:
+                    to_prune.append(d)
+            for d in to_prune:
+                dirnames.remove(d)
+
             for filename in filenames:
                 if len(results) >= max_results:
                     break
-                fp = Path(dirpath) / filename
+                fp = current / filename
+                if not _is_safe_search_file(fp, root, effective_policy):
+                    continue
                 rel = fp.relative_to(root).as_posix()
                 if rel in seen_files:
                     continue
@@ -354,7 +377,7 @@ def _explorer_core(
         )
     else:
         search_lines, search_duration = _search_with_python(
-            search_query, search_dirs, root,
+            search_query, search_dirs, root, policy=DEFAULT_POLICY,
         )
 
     brief["commands"].append({
@@ -375,7 +398,15 @@ def _explorer_core(
         if len(candidate_paths) >= max_files_read:
             break
         p = h["path"]
-        if p not in seen_candidates and (root / p).is_file():
+        fp = root / p
+        if p not in seen_candidates and fp.is_file():
+            excluded, reason = _is_always_excluded(fp, root)
+            if excluded:
+                brief["accessIssues"].append({
+                    "path": _mask_secret_path(p),
+                    "reason": reason,
+                })
+                continue
             candidate_paths.append(p)
             seen_candidates.add(p)
 
@@ -405,6 +436,8 @@ def _explorer_core(
         if chars_remaining <= 0:
             break
         fp = root / cpath
+        if not _is_safe_search_file(fp, root, DEFAULT_POLICY):
+            continue
         per_file = min(6000, chars_remaining)
         content = _defensive_read(fp, per_file)
         chars = len(content)
@@ -421,8 +454,10 @@ def _explorer_core(
         reason = "search_hit" if any(cpath in sl for sl in search_lines) else "scout_suggestion"
         evidence: list[str] = []
         for sl in search_lines:
-            if sl.startswith(cpath):
-                evidence.append(f"search_hit:{sl.split(':', 2)[2][:80] if ':' in sl[sl.index(':', 2)+1:] else ''}")
+            if sl.startswith(cpath + ":"):
+                parts = sl.split(":", 2)
+                snippet = parts[2][:80] if len(parts) > 2 else ""
+                evidence.append(f"search_hit:{snippet}")
 
         brief["candidateFiles"].append({
             "path": cpath,
@@ -433,6 +468,35 @@ def _explorer_core(
             "truncated": truncated,
             "excerpt": excerpt,
         })
+
+    read_paths = {
+        cf["path"] for cf in brief["candidateFiles"] if cf.get("contentIncluded")
+    }
+    listed_paths = {cf["path"] for cf in brief["candidateFiles"]}
+    for h in scout_hits:
+        p = h["path"]
+        if p not in read_paths and p not in listed_paths:
+            brief["candidateFiles"].append({
+                "path": p,
+                "reason": "scout_suggestion",
+                "evidence": h.get("reasons", [])[:3],
+                "contentIncluded": False,
+                "charsRead": 0,
+                "truncated": False,
+                "excerpt": "",
+            })
+            listed_paths.add(p)
+    for cpath in candidate_paths:
+        if cpath not in read_paths and cpath not in listed_paths:
+            brief["candidateFiles"].append({
+                "path": cpath,
+                "reason": "budget_exhausted",
+                "evidence": [],
+                "contentIncluded": False,
+                "charsRead": 0,
+                "truncated": False,
+                "excerpt": "",
+            })
 
     # Phase 5: derive relevant areas.
     area_dirs: dict[str, dict[str, Any]] = {}

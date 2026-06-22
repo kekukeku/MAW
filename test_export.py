@@ -184,6 +184,28 @@ Some headers.
         self.assertIn(".env", md)
         self.assertIn("stage3", md)
 
+    def test_render_context_summary_includes_explorer_brief(self):
+        context_pack = {
+            "version": 1,
+            "targetKey": "test",
+            "targetPath": "/tmp/test",
+            "summary": {"status": "ready", "totalChars": 300, "truncated": False, "includedFiles": 1},
+            "blueprint": {"tree": "", "readme": "", "dependencies": []},
+            "files": [],
+            "accessIssues": [],
+            "explorerBrief": {
+                "status": "ready",
+                "summary": "Explorer examined 2 files.",
+                "limits": {"filesRead": 2, "maxFilesRead": 8, "charsRead": 500, "maxCharsRead": 24000, "hitTimeout": False},
+                "commands": [{"kind": "search_text", "query": "token", "resultCount": 3, "tool": "python"}],
+                "candidateFiles": [{"path": "src/auth.py", "contentIncluded": True}],
+            },
+        }
+        summary = _render_context_summary(context_pack)
+        self.assertIn("Explorer Research Brief", summary)
+        self.assertIn("Explorer examined 2 files.", summary)
+        self.assertIn("search_text", summary)
+
     def test_render_context_summary_omits_missing_readme_row(self):
         context_pack = {
             "version": 1,

@@ -220,6 +220,39 @@ class TestContextPreviewAPI(unittest.TestCase):
         self.assertEqual(body["wouldAutoInclude"][0]["path"], "src/other.py")
         self.assertEqual(body["wouldAutoInclude"][0]["source"], "scout_auto_selected")
 
+    def test_explorer_preview_api_success(self):
+        brief = {
+            "version": 1,
+            "status": "ready",
+            "summary": "Explorer examined 1 file.",
+            "candidateFiles": [],
+            "commands": [{"kind": "search_text", "query": "token", "resultCount": 1, "tool": "python"}],
+            "limits": {"filesRead": 1, "maxFilesRead": 8, "charsRead": 100, "maxCharsRead": 24000, "hitTimeout": False},
+            "accessIssues": [],
+        }
+        with patch.object(main, "run_explorer_brief", return_value=brief):
+            res = self.client.post(
+                "/api/maw/context/explorer/preview",
+                json={"targetKey": "test", "prompt": "Fix token expiry"},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["status"], "ready")
+        self.assertIn("commands", body)
+
+    def test_create_conversation_requires_explorer_preview_key(self):
+        res = self.client.post(
+            "/api/maw/conversations/new",
+            json={
+                "prompt": "Fix auth",
+                "targetKey": "test",
+                "generateExplorerBrief": True,
+                "mock": True,
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("explorerPreviewKey", res.json()["detail"])
+
     def test_create_conversation_requires_scout_preview_key_when_auto_include(self):
         res = self.client.post(
             "/api/maw/conversations/new",

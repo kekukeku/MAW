@@ -441,16 +441,34 @@ class LoopOrchestrator:
             if wf.get("generate_explorer"):
                 try:
                     from explorer import run_explorer_brief
-                    explorer_preview_key = wf.get("explorer_preview_key", {})
-                    # G3: verify explorerPreviewKey matches current request.
-                    explorer_key_ok = (
-                        not explorer_preview_key
-                        or (
-                            explorer_preview_key.get("targetKey") == wf["target_key"]
-                            and explorer_preview_key.get("prompt") == wf["prompt"]
-                        )
-                    )
-                    if explorer_key_ok:
+                    explorer_preview_key = wf.get("explorer_preview_key")
+                    # G3: require explorerPreviewKey and verify it matches current request.
+                    if not explorer_preview_key:
+                        self._append_log(wf, "explorer", "Explorer skipped: missing preview key")
+                        explorer_brief = {
+                            "version": 1,
+                            "status": "skipped",
+                            "summary": "",
+                            "accessIssues": [{
+                                "path": "<explorer>",
+                                "reason": "explorer_skipped:missing_preview_key",
+                            }],
+                        }
+                    elif (
+                        explorer_preview_key.get("targetKey") != wf["target_key"]
+                        or explorer_preview_key.get("prompt") != wf["prompt"]
+                    ):
+                        self._append_log(wf, "explorer", "Explorer skipped: stale preview key")
+                        explorer_brief = {
+                            "version": 1,
+                            "status": "skipped",
+                            "summary": "",
+                            "accessIssues": [{
+                                "path": "<explorer>",
+                                "reason": "explorer_skipped:stale_preview",
+                            }],
+                        }
+                    else:
                         self._append_log(wf, "explorer", "Running Explorer research layer...")
                         explorer_brief = run_explorer_brief(
                             target_key=wf["target_key"],
@@ -461,13 +479,18 @@ class LoopOrchestrator:
                             f"Explorer complete: status={explorer_brief.get('status')}, "
                             f"files={explorer_brief.get('limits', {}).get('filesRead', 0)}",
                         )
-                    else:
-                        self._append_log(wf, "explorer", "Explorer skipped: stale preview key")
-                        explorer_brief = {"status": "skipped", "reason": "stale_preview"}
                 except Exception as exc:
                     logger.warning("Explorer failed for %s: %s", wf["workflow_id"], exc)
                     self._append_log(wf, "explorer", f"Explorer failed (L0 continues): {exc}")
-                    explorer_brief = {"status": "failed", "reason": str(exc)}
+                    explorer_brief = {
+                        "version": 1,
+                        "status": "failed",
+                        "summary": "",
+                        "accessIssues": [{
+                            "path": "<explorer>",
+                            "reason": f"explorer_failed:{exc}",
+                        }],
+                    }
             if explorer_brief:
                 context_pack["explorerBrief"] = explorer_brief
 

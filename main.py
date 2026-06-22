@@ -260,6 +260,11 @@ async def create_conversation(req: NewConversationRequest):
             status_code=400,
             detail="scoutPreviewKey is required when autoIncludeScoutFiles is enabled.",
         )
+    if req.generateExplorerBrief and not req.explorerPreviewKey:
+        raise HTTPException(
+            status_code=400,
+            detail="explorerPreviewKey is required when generateExplorerBrief is enabled.",
+        )
     if req.councilModels and not req.mock and not MOCK_MODE:
         llm_data = setup_api.get_llm_models()
         enabled = {m["id"] for m in llm_data["models"] if m["enabled"]}

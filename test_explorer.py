@@ -161,6 +161,21 @@ class TestExplorer(unittest.TestCase):
             brief = ex.run_explorer_brief("test", "Fix token", allow_llm_summary=True)
         self.assertIn("summary", brief)
 
+    def test_python_search_skips_secret_files(self):
+        (self.target_root / "src" / "leak.py").write_text("token expiry secret", encoding="utf-8")
+        lines, _ = ex._search_with_python(
+            "token expiry",
+            [self.target_root],
+            self.target_root,
+            max_results=20,
+        )
+        paths = {line.split(":", 1)[0] for line in lines}
+        self.assertNotIn(".env", paths)
+
+    def test_is_safe_search_file_rejects_env(self):
+        env_path = self.target_root / ".env"
+        self.assertFalse(ex._is_safe_search_file(env_path, self.target_root, pc.DEFAULT_POLICY))
+
 
 if __name__ == "__main__":
     unittest.main()
