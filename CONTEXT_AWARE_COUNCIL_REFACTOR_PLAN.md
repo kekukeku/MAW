@@ -408,26 +408,33 @@ Context: Blueprint ready · 3 suggested files · Add files
 
 ### 5.4 L3 Explorer Brief
 
-**狀態**：P3 長期目標。
+**狀態**：P3 — Phase 6f 規劃完成，待實作（6a–6e 已完成）。
 
-Explorer 是唯讀調研 agent，不是 executor。
+Explorer 是唯讀調研 agent，不是 executor。詳細規格見 **§12 Phase 6f**。
 
-可做：
+與 L2 Scout 的分工：
 
-- symbol search
-- callsite search
-- test discovery
-- framework route discovery
-- 產出 `Context Brief`
+```text
+Scout (L2)     → 推薦檔案清單（preview / optional auto-include）
+Explorer (L3)  → 調研 brief（摘要 + 證據鏈，不注入 contextFiles）
+L1 files       → source of truth（完整檔案內容）
+```
+
+可做（MVP）：
+
+- list / read safe files
+- 純 Python text search
+- test file name discovery
+- dependency/config inspect
+- symbol-ish search（文字 regex，非 AST）
+- 產出可審計 `Context Brief`
 
 不可做：
 
-- 修改檔案
-- 安裝依賴
-- 跑高風險命令
-- 自動把不透明結論當成事實
-
-MVP 不需要 L3。先把 L0 做穩，再依序補 L1/L2。
+- 修改檔案或寫入 target project
+- 安裝依賴、build、test、formatter
+- git 寫操作或高風險 shell
+- 自動把不透明結論當成事實（失敗時 summary 必須為空）
 
 ---
 
@@ -1036,21 +1043,288 @@ Phase 6c+:
 
 ### Phase 6f - Explorer Brief Prototype
 
-目標：
+**狀態**：規劃完成，待實作。前置：6a L0、6d L1、6e Scout + auto-include（含 preview key、provenance、G10 auto-approve guard）均已落地。
 
-為大型專案提供深度調研，但不阻塞 MVP。
+#### 6f.0 建議是否做
 
-工作項：
+**建議做，但 MVP 極窄。**
 
-- 唯讀 Explorer command set。
-- `Context Brief` schema。
-- 可選啟用。
-- 超時與失敗 fallback。
+- Scout 解決「推薦哪些檔」；Explorer 補「區域地圖 + 證據鏈」敘事 brief。
+- 唯讀、無 target 寫入，與 Executor 邊界清晰。
+- **不做全功能 agent**：MVP = deterministic read/search + template summary，**不呼叫 LLM**，**不跑 subprocess**（`rg` 列為 6f+ optional）。
 
-驗收：
+#### 6f.1 Explorer 定位
+
+- Explorer 是 **read-only research layer**，只產出 brief，**不修改 `contextFiles`**。
+- Runtime 主路徑：`context_pack.explorerBrief`。
+- Gate #1 export 時可選鏡像至 `MAW_workflow/PLANNING/context_brief_NNN.json`（非 MVP 必要）。
+- Explorer 執行當下**不寫入** target project 或 `PLANNING/`。
+- **失敗隔離**：`explorerBrief = null` 或 `{status: "failed"|"timeout", summary: ""}`；`build_context_pack()` 照常產 L0/L1/L2；`accessIssues` / `warnings` 記錄 explorer 問題。**禁止**用 L0 tree 拼湊假 brief 或 LLM 補寫 summary。
+
+#### 6f.2 啟用方式
+
+| 選項 | MVP 決策 |
+|------|----------|
+| 預設關閉 | ✅ |
+| Panel 1 toggle：`Generate Explorer Brief` | ✅ 唯一入口 |
+| Gate #1 前提示「可加深調研」 | ❌ 延後 6f+ |
+| 自動啟用 | ❌ 不允許 |
+
+對齊 6e-C 的 **preview key** 模式：
+
+```text
+Preview Explorer  →  POST /api/maw/context/explorer/preview
+Start Council     →  generateExplorerBrief: true 時必帶 explorerPreviewKey {targetKey, prompt}
+Stale             →  target/prompt 變更 → brief 作廢，需重新 preview
+```
+
+MVP 可先只做 preview；Start 阻擋 guard（無 preview / stale）可於 6f-D 對齊 6e-C UX。
+
+#### 6f.3 唯讀命令白名單
+
+後端以 **internal ops enum** 實作，不暴露 shell：
+
+```python
+ExplorerOp = Literal[
+    "list_files",      # 重用 list_safe_files / _collect_candidate_files
+    "read_file",       # 重用 _read_l1_file + path validation
+    "search_text",     # 純 Python walk + regex（MVP）
+    "inspect_deps",    # package.json / pyproject.toml 等
+    "find_tests",      # fnmatch *test* 鄰近 matched source
+    "symbol_search",   # MVP = 文字 regex 找 def/class/export（非 AST）
+]
+```
+
+**必須重用** `project_context` 的 `_validate_context_file_path`、secret/binary/gitignore 排除；Explorer 不得繞過 Scout 安全層自建讀檔路徑。
+
+**不可用**：install、build、test、formatter、git 寫操作、target project 任何寫入。
+
+#### 6f.4 Safety gates（G1–G12）
+
+| Gate | 規則 |
+|------|------|
+| G1 | `generateExplorerBrief=false` → 不執行 |
+| G2 | `prompt` 為空 → skip |
+| G3 | Start 時需 `explorerPreviewKey` 且 match（對稱 6e-C G3） |
+| G4 | 路徑限 target root 內 |
+| G5 | secret / binary / gitignored / denylist → 不讀、不搜 |
+| G6 | wall-clock timeout（MVP 建議 15s） |
+| G7 | `maxFilesRead`（建議 8） |
+| G8 | `maxCharsRead`（建議 24_000，獨立於 context pack budget） |
+| G9 | `maxSearchResults`（建議 50） |
+| G10 | `maxCandidateFiles` in brief（建議 12） |
+| G11 | 每個 read/search 記錄 provenance → `commands[]` |
+| G12 | timeout / exception → `status=timeout\|failed`，**summary 必須為空字串** |
+
+Explorer brief **不阻擋** auto-approve（與 scout_auto 不同）；brief 是摘要層。
+
+#### 6f.5 Context Brief schema
+
+```json
+{
+  "version": 1,
+  "status": "ready|partial|failed|timeout|skipped",
+  "generatedAt": "ISO8601",
+  "targetKey": "string",
+  "query": "string",
+  "previewKey": { "targetKey": "string", "prompt": "string" },
+  "summary": "string",
+  "relevantAreas": [
+    {
+      "path": "src/auth",
+      "reason": "string",
+      "confidence": "low|medium|high",
+      "evidence": ["search_hit:token expiry:3"]
+    }
+  ],
+  "candidateFiles": [
+    {
+      "path": "src/auth/session.ts",
+      "reason": "string",
+      "evidence": ["keyword_match:token", "nearby_test:session.test.ts"],
+      "contentIncluded": false,
+      "charsRead": 3000,
+      "truncated": false,
+      "excerpt": "optional, max 500 chars"
+    }
+  ],
+  "missingContext": ["Need route/controller entrypoint"],
+  "commands": [
+    {
+      "kind": "search_text",
+      "query": "token expiry",
+      "pathsSearched": 120,
+      "resultCount": 12,
+      "durationMs": 45
+    }
+  ],
+  "limits": {
+    "maxFilesRead": 8,
+    "maxCharsRead": 24000,
+    "timeoutSeconds": 15,
+    "filesRead": 5,
+    "charsRead": 8200,
+    "hitTimeout": false
+  },
+  "accessIssues": []
+}
+```
+
+重點欄位：
+
+- `contentIncluded: false` — brief 提到檔但未讀全文時必須標明。
+- `previewKey` — 支援 stale 驗證。
+- `limits` — Gate #1 provenance 可一眼看出是否 truncated。
+- `summary` — MVP 用 template 拼接，不用 LLM。
+
+#### 6f.6 Prompt integration
+
+對照 `build_prompt_envelope()` 預算優先級，新增 **P2.5**：
+
+```text
+P1   Context Status
+P2   L1 User-Selected + Scout Auto-Selected（完整內容，永不截斷）
+P2.5 Explorer Brief（摘要層，可截斷）   ← 在 L1/L2 之後、L0 之前
+P3   L0 Blueprint（tree/README/deps，可截斷）
+P4   Context Boundaries + User Request
+```
+
+Prompt 必帶 instruction block：
+
+```markdown
+## Explorer Research Brief (L3 — NOT source of truth)
+- This section is an automated read-only research summary.
+- Prefer User-Selected and Scout Auto-Selected file contents over this brief.
+- Files listed with contentIncluded=false were NOT fully read; do not infer implementation details.
+- Treat missingContext items as explicit gaps.
+```
+
+`candidateFiles` 預設只放 **excerpt**（≤500 chars），避免與 L1 重複。
+
+#### 6f.7 UI/UX（MVP 輕量）
+
+| 元素 | 規格 |
+|------|------|
+| Panel 1 toggle | `[ ] Generate Explorer Brief`，預設 off，`localStorage: maw_explorer_brief` |
+| Context bar | `· Explorer brief ready` / `· Explorer 已過期，請重新產生` |
+| 觸發 | **獨立按鈕** `[產生 Explorer Brief]`（不拖慢 `/context/preview`） |
+| Preview modal | status、summary、relevantAreas、candidateFiles（標 contentIncluded）、commands 摘要 |
+| Gate #1 | provenance 顯示 brief status + limits + top commands |
+
+不新增 wizard。Explorer 與 Context Preview **分開觸發**。
+
+#### 6f.8 API 方案
+
+**獨立 API**（不擴充 `/api/maw/context/preview`）：
+
+```http
+POST /api/maw/context/explorer/preview
+```
+
+Request：
+
+```json
+{
+  "targetKey": "string",
+  "prompt": "string",
+  "contextFiles": ["optional L1 seed paths"],
+  "maxFilesRead": 8,
+  "maxCharsRead": 24000,
+  "timeoutSeconds": 15
+}
+```
+
+Response：`ExplorerBrief` schema（§6f.5）。
+
+Start Council 擴充 `NewConversationRequest`：
+
+```json
+{
+  "generateExplorerBrief": false,
+  "explorerPreviewKey": { "targetKey": "...", "prompt": "..." }
+}
+```
+
+- `generateExplorerBrief=true` 且無 key → **400**（對稱 6e-C）。
+- Orchestrator 在 `build_context_pack()` 後呼叫 `run_explorer_brief()`，結果掛 `context_pack.explorerBrief`。
+
+#### 6f.9 MVP 邊界
+
+| 在 MVP 內 | 在 MVP 外 |
+|-----------|-----------|
+| 純 Python text search | LLM 生成 summary |
+| Template summary | AST / LSP symbol resolution |
+| 獨立 explorer preview API | `rg` subprocess |
+| Panel 1 toggle + modal | Gate #1「建議加深調研」 |
+| `context_pack.explorerBrief` | 自動啟用 |
+| Start optional attach（含 preview key） | Explorer 修改 contextFiles |
+| Export provenance 摘要 | 完整 wizard |
+
+#### 6f.10 不做事項
+
+1. 不呼叫 LLM 寫 brief。
+2. 不寫入 target project。
+3. 不把 brief 內容當 L1 注入 `contextFiles`。
+4. 不跑 npm/pip/pytest/build/git。
+5. 不阻塞 Context Preview API。
+6. 不做 auto-enable。
+7. 失敗時不 fallback 合成 summary。
+8. 不讓 Explorer brief 優先於 user-selected 檔案內容。
+9. MVP 不做 Gate #1 二次調研提示。
+10. 不新增 `rg` 硬依賴。
+
+#### 6f.11 實作切分
+
+```text
+6f-A  explorer.py + schema + run_explorer_brief()     [pure Python, no HTTP]
+6f-B  POST /api/maw/context/explorer/preview          [可獨立驗收]
+6f-C  context_pack.explorerBrief + prompt + export    [Council 可見]
+6f-D  UI toggle + preview modal + context bar         [最後]
+```
+
+建議順序：6f-A → 6f-B → 6f-C → 6f-D。6f-C 可在 6f-D 前 merge，方便後端先驗收。
+
+#### 6f.12 測試計劃
+
+新增 `test_explorer.py`：
+
+| # | 測試 |
+|---|------|
+| 1 | 預設不執行 → `explorerBrief` null 或 `skipped` |
+| 2 | 只讀 safe files；`../etc/passwd` rejected |
+| 3 | secret / binary / gitignored 不被 read/search |
+| 4 | timeout → `status=timeout`，`summary=""`，L0/L1 仍可用 |
+| 5 | hit `maxFilesRead` → `status=partial` |
+| 6 | brief schema 欄位穩定 |
+| 7 | `build_prompt_envelope` 含 brief + NOT source of truth 文案 |
+| 8 | `contentIncluded=false` 在 envelope 標明未讀 |
+| 9 | Explorer exception 不阻斷 Council workflow |
+| 10 | target project 無新寫入 |
+| 11 | missing `explorerPreviewKey` on start → skip + accessIssue |
+| 12 | stale key → skip |
+
+`test_context_api.py` 補充：
+
+- `POST /explorer/preview` 200 + schema
+- unknown target → 400
+
+#### 6f.13 Rollout sequence
+
+```text
+6f-A  backend + unit tests (explorer.py)
+6f-B  explorer preview API + API tests
+6f-C  prompt envelope + export provenance + orchestrator wire
+6f-D  UI toggle + modal + stale/key guard
+Post  6f+  rg optional, Gate #1 re-explore hint, PLANNING/ json export
+```
+
+#### 6f.14 驗收標準
 
 - Explorer 不寫入 target repo。
-- Explorer 失敗不破壞 L0/L1/L2 council。
+- Explorer 失敗 / 超時不破壞 L0/L1/L2 Council。
+- brief 可審計（commands + evidence + limits）。
+- Council prompt 明確標示 brief 為 research summary，非 source of truth。
+- User-selected 檔案內容優先於 brief。
 
 ---
 
@@ -1094,6 +1368,10 @@ Phase 6d+ 才新增：
 
 - `test_context_budget.py`
 - `test_context_scout.py`
+
+Phase 6f 新增：
+
+- `test_explorer.py`（見 §12 Phase 6f.12）
 
 ### 13.2 Council Tests
 
