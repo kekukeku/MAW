@@ -345,6 +345,66 @@ Some headers.
         shutil.rmtree(temp_conv_dir, ignore_errors=True)
         shutil.rmtree(target_dir, ignore_errors=True)
 
+    def test_export_fallback_without_context_audit_uses_audit_unavailable(self):
+        """6g.1: legacy conversations without context_audit produce audit_unavailable, not allowed_policy_ok."""
+        from export import export_to_target
+        temp_conv_dir = tempfile.mkdtemp()
+        conv_data = {
+            "title": "Legacy Task",
+            "prompt": "Legacy Prompt",
+            "context_pack": {
+                "version": 1,
+                "targetKey": "test",
+                "summary": {"status": "ready"},
+                "blueprint": {"tree": "t"},
+                "files": [],
+                "accessIssues": []
+            },
+            # No context_audit key
+            "messages": [
+                {"role": "user", "content": "Legacy Prompt"},
+                {
+                    "role": "assistant",
+                    "content": "Stage 3 result",
+                    "stage1": [{"model": "m", "response": "r"}],
+                    "stage2": [{"model": "m", "ranking": "rankings"}],
+                    "stage3": {"response": "Stage 3 result"},
+                    "metadata": {"models": {"m": "model-a"}}
+                }
+            ]
+        }
+        with open(os.path.join(temp_conv_dir, "conv-legacy.json"), "w", encoding="utf-8") as f:
+            json.dump(conv_data, f)
+            
+        target_dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(target_dir, "MAW_workflow", "TASKS"))
+        os.makedirs(os.path.join(target_dir, "MAW_workflow", "PLANNING"))
+        with open(os.path.join(target_dir, "MAW_workflow", "AGENT_STATE.md"), "w", encoding="utf-8") as f:
+            f.write("# Agent State\n\n| Task ID | State |\n|---|---|\n")
+            
+        with patch("export.get_conversations_dir", return_value=temp_conv_dir), \
+             patch("export.load_targets", return_value={"projects": {"test": {"path": target_dir}}}), \
+             patch("export.validate_target", return_value=(True, [])):
+             
+            res = export_to_target(
+                target_key="test",
+                conversation_id="conv-legacy",
+                message_index=1,
+                title="Legacy Task",
+                priority="MEDIUM",
+                files_affected="",
+                non_goals=""
+            )
+            
+            json_file = os.path.join(target_dir, "MAW_workflow", "PLANNING", f"council_{res['taskNum']}.json")
+            with open(json_file, "r") as f:
+                exported_json = json.load(f)
+            self.assertIn("contextAuditSummary", exported_json)
+            self.assertEqual(exported_json["autoApprovePolicy"]["reasonCode"], "audit_unavailable")
+            
+        shutil.rmtree(temp_conv_dir, ignore_errors=True)
+        shutil.rmtree(target_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

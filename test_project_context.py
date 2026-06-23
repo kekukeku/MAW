@@ -597,6 +597,7 @@ class TestProjectContext(unittest.TestCase):
         }
         summary = pc.build_context_audit_summary(pack)
         self.assertEqual(summary["highestLevel"], "L0")
+        self.assertIn("l0_only", summary["riskFlags"])
         self.assertTrue(summary["sources"]["blueprint"]["present"])
         self.assertEqual(summary["sources"]["blueprint"]["files"], 1)
 
@@ -644,6 +645,42 @@ class TestProjectContext(unittest.TestCase):
         pack["summary"]["status"] = "failed"
         summary = pc.build_context_audit_summary(pack)
         self.assertEqual(summary["status"], "failed")
+
+    def test_audit_highest_level_fallback_on_explorer_failure(self):
+        base = {
+            "version": 1, "targetKey": "test",
+            "blueprint": {"tree": "t", "readme": "r", "dependencies": []},
+            "files": [{"path": "src/a.py", "source": "user_selected", "chars": 100}],
+        }
+        # explorer timeout + L1 → fall back to L1, keep explorer_timeout flag
+        p = {**base, "explorerBrief": {"status": "timeout", "limits": {"hitTimeout": True}, "candidateFiles": []}}
+        s = pc.build_context_audit_summary(p)
+        self.assertEqual(s["highestLevel"], "L1")
+        self.assertIn("explorer_timeout", s["riskFlags"])
+
+        # explorer failed + L2 → fall back to L2, keep explorer_failed flag
+        p = {**base,
+             "files": [{"path": "src/a.py", "source": "scout_auto_selected", "scoutScore": 80}],
+             "explorerBrief": {"status": "failed", "candidateFiles": []}}
+        s = pc.build_context_audit_summary(p)
+        self.assertEqual(s["highestLevel"], "L2")
+        self.assertIn("explorer_failed", s["riskFlags"])
+
+        # explorer skipped + blueprint only → L0
+        p = {**base, "files": [], "explorerBrief": {"status": "skipped"}}
+        s = pc.build_context_audit_summary(p)
+        self.assertEqual(s["highestLevel"], "L0")
+
+        # L0 only + explorer failed → L0, keep explorer_failed flag
+        p = {**base, "files": [], "explorerBrief": {"status": "failed", "candidateFiles": []}}
+        s = pc.build_context_audit_summary(p)
+        self.assertEqual(s["highestLevel"], "L0")
+        self.assertIn("explorer_failed", s["riskFlags"])
+
+        # explorer ready → L3 (regression guard)
+        p = {**base, "explorerBrief": {"status": "ready", "candidateFiles": [1], "commands": [1]}}
+        s = pc.build_context_audit_summary(p)
+        self.assertEqual(s["highestLevel"], "L3")
 
 
 if __name__ == "__main__":

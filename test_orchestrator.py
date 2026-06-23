@@ -343,15 +343,6 @@ class TestOrchestrator(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_has_scout_auto_selected_detects_files(self):
-        self.assertTrue(self.orch._has_scout_auto_selected({
-            "files": [{"source": "user_selected"}, {"source": "scout_auto_selected"}],
-        }))
-        self.assertFalse(self.orch._has_scout_auto_selected({
-            "files": [{"source": "user_selected"}],
-        }))
-        self.assertFalse(self.orch._has_scout_auto_selected(None))
-
     def test_auto_approve_demoted_by_scout_auto(self):
         """G10: auto-approve blocked when scout_auto_selected files present."""
         async def _run():
@@ -578,6 +569,21 @@ class TestOrchestrator(unittest.TestCase):
         dec = self.orch._can_auto_approve_council(wf_ok, pack_l1)
         self.assertTrue(dec["allowed"])
         self.assertEqual(dec["reasonCode"], "allowed_policy_ok")
+
+    def test_failed_explorer_does_not_bypass_l0_guard(self):
+        """6g.1: L0 blueprint only + failed explorer must still be blocked_l0_only."""
+        wf = {"review_policy": {"auto_approve_council": True}, "prompt": "do something"}
+        context_pack = {
+            "version": 1, "targetKey": "test",
+            "blueprint": {"tree": "t", "readme": "r", "dependencies": []},
+            "summary": {"status": "ready"},
+            "files": [],
+            "explorerBrief": {"status": "failed", "candidateFiles": []},
+        }
+        decision = self.orch._can_auto_approve_council(wf, context_pack)
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["reasonCode"], "blocked_l0_only")
+        self.assertIn("explorer_failed", decision["riskFlags"])
 
 
 if __name__ == "__main__":

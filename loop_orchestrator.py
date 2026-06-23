@@ -451,15 +451,6 @@ class LoopOrchestrator:
         }
 
 
-    def _has_scout_auto_selected(self, context_pack: dict[str, Any] | None) -> bool:
-        """Return True if any context file was scout-auto-selected."""
-        if not context_pack:
-            return False
-        return any(
-            f.get("source") == "scout_auto_selected"
-            for f in context_pack.get("files", [])
-        )
-
     async def _run_council_task(self, wf_id: str) -> None:
         wf = self._workflows.get(wf_id)
         if not wf:

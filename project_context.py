@@ -1208,7 +1208,11 @@ def build_context_audit_summary(context_pack: dict[str, Any] | None) -> dict[str
         eb_hit_timeout = eb.get("status") == "timeout" or eb.get("limits", {}).get("hitTimeout", False)
 
     # 4. highestLevel logic
-    if eb_present and eb_status not in (None, "skipped"):
+    # Phase 6g.1: explorer brief only counts as L3 when it actually produced
+    # usable research (ready/partial). timeout/failed/skipped fall back to the
+    # level implied by scout/user/blueprint, but risk flags are preserved.
+    explorer_usable = eb_present and eb_status in ("ready", "partial")
+    if explorer_usable:
         highest_level = "L3"
     elif scout_files:
         highest_level = "L2"
@@ -1249,13 +1253,15 @@ def build_context_audit_summary(context_pack: dict[str, Any] | None) -> dict[str
         risk_flags.append("access_issue")
     if context_pack.get("summary", {}).get("truncated", False):
         risk_flags.append("context_truncated")
+    if highest_level == "L0":
+        risk_flags.append("l0_only")
 
     # 9. promptIncluded
     prompt_included = {
         "blueprint": bool(bp.get("tree")),
         "userSelectedFiles": len(user_files) > 0,
         "scoutAutoSelectedFiles": len(scout_files) > 0,
-        "explorerBrief": eb_present and eb_status not in (None, "failed", "skipped"),
+        "explorerBrief": eb_present and eb_status in ("ready", "partial"),
     }
 
     return {

@@ -1758,6 +1758,14 @@ P3: 6f Explorer Brief
 P3: 6g Context Governance / Audit Hardening
 ```
 
+### 6g 正式設計決策（6g.1 收斂後落檔）
+
+**1. `context_truncated` 與一般 `accessIssues` 預設只做 audit，不阻擋 auto-approve。**
+`blocked_context_truncated` reasonCode 不實作。字元預算截斷（含 secrets 排除）僅以 `riskFlags: context_truncated` / `access_issue` 記錄於 audit trail。未來若 policy 顯式要求，可再評估是否新增阻擋規則。
+
+**2. `allow_partial_auto_approve` 預設值為 `True`。**
+當 context `status == "partial"`（有 accessIssues）時，auto-approve 預設仍允許通過，除非 review policy 顯式設為 `False`（見 `loop_orchestrator.py:404`）。此為保守設計——partial context 可能會造成弱基礎決策，但不應硬性阻擋工作流推進。Gate #1 UI 仍會展示所有 riskFlags 供人工審計。
+
 最重要的取捨：
 
 **先修正 Council 的資訊來源，再追求智慧推薦。**

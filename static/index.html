@@ -1214,7 +1214,8 @@
         'explorer_timeout': 'Explorer 掃描逾時 (explorer_timeout)',
         'context_truncated': '背景字元超出預算已截斷 (context_truncated)',
         'access_issue': '檔案存取或排除警訊 (access_issue)',
-        'l0_only': '僅限 L0 藍圖層級 (l0_only)'
+        'l0_only': '僅限 L0 藍圖層級 (l0_only)',
+        'explorer_failed': 'Explorer 調研失敗 (explorer_failed)'
       };
       return mapping[flag] || flag;
     }
@@ -1362,6 +1363,7 @@
     function renderExplorerBriefHtml(brief) {
       if (!brief) return '';
       let html = '<h4>Explorer 調研簡報 (L3)</h4>';
+      html += '<p style="font-size:11px;color:var(--muted);"><em>研究參考層，非事實依據 (research brief — not source of truth)。請以手動選取與 Scout 自動選取的檔案內容為準。</em></p>';
       html += `<p><strong>狀態:</strong> ${escapeHtml(brief.status || 'unknown')}</p>`;
       if (brief.summary) html += `<p><strong>摘要:</strong> ${escapeHtml(brief.summary)}</p>`;
       const candidates = brief.candidateFiles || [];

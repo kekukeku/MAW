@@ -407,7 +407,7 @@ def _render_context_summary(context_pack, context_audit=None):
         audit_summary = build_context_audit_summary(context_pack)
         auto_approve_policy = {
             "allowed": False,
-            "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+            "reasonCode": "blocked_no_context" if not context_pack else "audit_unavailable",
             "riskFlags": audit_summary.get("riskFlags", [])
         }
     else:
@@ -419,7 +419,7 @@ def _render_context_summary(context_pack, context_audit=None):
         if not auto_approve_policy:
             auto_approve_policy = {
                 "allowed": False,
-                "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+                "reasonCode": "blocked_no_context" if not context_pack else "audit_unavailable",
                 "riskFlags": audit_summary.get("riskFlags", [])
             }
 
@@ -462,7 +462,8 @@ def _render_context_summary(context_pack, context_audit=None):
         "blocked_context_failed": "Context scan failed with exception",
         "blocked_context_partial": "Context status is partial and policy blocks it",
         "blocked_fatal_access": "Fatal permission denied in context pack",
-        "blocked_prompt_file_missing": "Prompt references file not found in context"
+        "blocked_prompt_file_missing": "Prompt references file not found in context",
+        "audit_unavailable": "Audit record unavailable for this legacy council (recomputed from context pack)",
     }
     reason_desc = reason_mappings.get(reason_code, reason_code)
     auto_approve_str = f"{reason_code} ({reason_desc})"
@@ -789,7 +790,7 @@ def export_to_target(target_key, conversation_id, message_index, title, priority
         if not auto_approve_policy:
             auto_approve_policy = {
                 "allowed": False,
-                "reasonCode": "blocked_no_context" if not context_pack else "allowed_policy_ok",
+                "reasonCode": "blocked_no_context" if not context_pack else "audit_unavailable",
                 "riskFlags": audit_summary.get("riskFlags", [])
             }
         
