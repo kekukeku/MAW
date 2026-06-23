@@ -1342,7 +1342,7 @@ Post  6f+  Gate #1 re-explore hint, PLANNING/ json export
 
 ## 13. Phase 6g - Context Governance / Audit Hardening
 
-**狀態**：待實作。前置：6a L0、6d L1、6e Scout、6f Explorer 均已落地。
+**狀態**：已完成（6g: `686da94`，6g.1 polish: `c5c1e00`）。前置 6a–6f 均已落地。
 
 ### 13.0 建議是否做
 
@@ -1755,10 +1755,12 @@ P1: 6c Context Preview API + Minimal Context Bar
 P2: 6d Manual Context Files
 P2: 6e Scout Auto Recommendation
 P3: 6f Explorer Brief
-P3: 6g Context Governance / Audit Hardening
+P3: 6g Context Governance / Audit Hardening ✅
+P3: 6g.1 Audit Level Correctness & Consistency ✅
+P4: 7  Release Hardening / Real Workflow Validation  ← current
 ```
 
-### 6g 正式設計決策（6g.1 收斂後落檔）
+### 6g.1 設計決策收斂（6g + 6g.1 polish 完成後落檔）
 
 **1. `context_truncated` 與一般 `accessIssues` 預設只做 audit，不阻擋 auto-approve。**
 `blocked_context_truncated` reasonCode 不實作。字元預算截斷（含 secrets 排除）僅以 `riskFlags: context_truncated` / `access_issue` 記錄於 audit trail。未來若 policy 顯式要求，可再評估是否新增阻擋規則。
@@ -1771,6 +1773,24 @@ P3: 6g Context Governance / Audit Hardening
 **先修正 Council 的資訊來源，再追求智慧推薦。**
 
 也就是先保證每一次 Council 都有可審計的 context，再逐步讓 context selection 變得更聰明。
+
+---
+
+### 17.1 Phase 6g.1 — Audit Level Correctness (completed)
+
+**狀態**：已完成（`c5c1e00`）。
+
+- `highestLevel` promotes to L3 only when `explorerBrief.status in ("ready", "partial")`.
+- Failed/timeout/skipped explorer falls back to L2/L1/L0; risk flags preserved.
+- `l0_only` emitted backend-side; `explorer_failed` translated in frontend.
+- Export fallback uses `audit_unavailable`; dead `_has_scout_auto_selected` removed.
+
+### 17.2 Phase 7 — Release Hardening
+
+See `CONTEXT_RELEASE_HARDENING_PLAN.md` and `docs/CONTEXT_GOVERNANCE.md`.
+
+- `context_smoke_test.py` validates full HTTP context governance contract.
+- `docs/CONTEXT_GOVERNANCE.md` is the operator-facing reasonCode / riskFlags reference.
 
 ---
 

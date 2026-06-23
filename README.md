@@ -142,23 +142,37 @@ Six GUI/TUI agents (executor and reviewer use the same list): `openwork`, `grok_
 
 ## Testing
 
-Run the full test suite in mock mode (49 tests):
+Run the full test suite in mock mode (**154 tests**):
+
+```bash
+MAW_MOCK_MODE=1 uv run pytest -q
+```
+
+Legacy unittest entry (equivalent):
 
 ```bash
 MAW_MOCK_MODE=1 uv run python -m unittest discover -q
 ```
 
-Run a single module:
+Context-aware E2E smoke (HTTP, mock council, validates audit export contract):
 
 ```bash
-MAW_MOCK_MODE=1 uv run python -m unittest test_safety -v
+MAW_MOCK_MODE=1 uv run python context_smoke_test.py
 ```
 
-End-to-end HTTP smoke test (starts uvicorn on port 8082, exercises full happy path):
+Full workflow E2E smoke (happy path through commit):
 
 ```bash
 MAW_MOCK_MODE=1 uv run python smoke_test.py
 ```
+
+Run a single module:
+
+```bash
+MAW_MOCK_MODE=1 uv run pytest test_safety.py -v
+```
+
+See `docs/CONTEXT_GOVERNANCE.md` for reasonCode, riskFlags, and auto-approve policy reference.
 
 ## Safety Defaults
 
