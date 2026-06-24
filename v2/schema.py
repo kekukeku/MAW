@@ -59,7 +59,11 @@ PHASES = [
 
 APPROVE = "APPROVE"
 REQUEST_CHANGES = "REQUEST_CHANGES"
+REJECT = "REJECT"
 CANCEL = "CANCEL"
+
+VALID_REVIEW_DECISIONS = {APPROVE, REQUEST_CHANGES, REJECT}
+VALID_USER_DECISIONS = {APPROVE, REQUEST_CHANGES, CANCEL}
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +257,7 @@ TRANSITIONS: dict[WorkflowStatus, list[WorkflowStatus]] = {
     WorkflowStatus.REVIEWING: [
         WorkflowStatus.REVISION_REQUIRED,
         WorkflowStatus.COMMITTING,
+        WorkflowStatus.WAITING_USER_DECISION,
     ],
     WorkflowStatus.REVISION_REQUIRED: [
         WorkflowStatus.REVIEWING,

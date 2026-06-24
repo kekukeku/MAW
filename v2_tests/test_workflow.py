@@ -25,6 +25,10 @@ from v2.schema import (
     ARTIFACT_USER_DECISION,
     ARTIFACT_COMMIT,
     ARTIFACT_COMPLETION,
+    APPROVE,
+    REQUEST_CHANGES,
+    REJECT,
+    CANCEL,
 )
 from v2.files import (
     init_workflow,
@@ -191,6 +195,13 @@ class TestWorkflowTransitions(unittest.TestCase):
         self.assertTrue(self._transition_and_reload())
         self.assertEqual(self.manifest["status"], "REVISION_REQUIRED")
 
+    def test_review_reject_triggers_user_decision(self):
+        set_status(self.manifest, WorkflowStatus.REVIEWING)
+        save_manifest(str(self.wf_dir), self.manifest)
+        write_atomic(self.wf_dir / review_path(1), "DECISION: REJECT\n\nCannot proceed as planned.")
+        self.assertTrue(self._transition_and_reload())
+        self.assertEqual(self.manifest["status"], "WAITING_USER_DECISION")
+
     # ── REVISION → REVIEWING ──
 
     def test_revision_new_walkthrough_triggers_reviewing(self):
@@ -201,8 +212,8 @@ class TestWorkflowTransitions(unittest.TestCase):
         ensure_workflow_dirs(self.wf_dir)
         set_status(self.manifest, WorkflowStatus.REVISION_REQUIRED)
         increment_review_iteration(self.manifest)  # review_iteration = 1
-        # Now expect walkthrough_001 (iteration matches review_iteration)
-        write_atomic(self.wf_dir / walkthrough_path(1), "# Fixed walkthrough")
+        # Next walkthrough is iteration + 1 = 2
+        write_atomic(self.wf_dir / walkthrough_path(2), "# Fixed walkthrough v2")
         save_manifest(str(self.wf_dir), self.manifest)
         self.assertTrue(self._transition_and_reload())
         self.assertEqual(self.manifest["status"], "REVIEWING")
@@ -214,10 +225,24 @@ class TestWorkflowTransitions(unittest.TestCase):
         self.wf_dir = init_workflow(self.target, "wf_max", self.manifest, "req")
         ensure_workflow_dirs(self.wf_dir)
         set_status(self.manifest, WorkflowStatus.REVISION_REQUIRED)
-        self.manifest["review_iteration"] = 2  # exceeded max (1)
+        self.manifest["review_iteration"] = 1  # iteration == max (boundary)
         save_manifest(str(self.wf_dir), self.manifest)
         self._transition_and_reload()
         self.assertEqual(self.manifest["status"], "WAITING_USER_DECISION")
+
+    def test_revision_does_not_trigger_on_wrong_walkthrough(self):
+        """walkthrough_001 must not trigger REVISION_REQUIRED -> REVIEWING when review_iteration=1."""
+        self.manifest = make_manifest(
+            "wf_rev2", self.target, self.roster, max_review_iterations=3
+        )
+        self.wf_dir = init_workflow(self.target, "wf_rev2", self.manifest, "req")
+        ensure_workflow_dirs(self.wf_dir)
+        set_status(self.manifest, WorkflowStatus.REVISION_REQUIRED)
+        self.manifest["review_iteration"] = 1  # expect walkthrough_002
+        save_manifest(str(self.wf_dir), self.manifest)
+        write_atomic(self.wf_dir / walkthrough_path(1), "# Old walkthrough")
+        self.assertFalse(self._transition_and_reload())
+        self.assertEqual(self.manifest["status"], "REVISION_REQUIRED")
 
     # ── COMMITTING → CHAIR_FINAL_CHECK ──
 
@@ -371,6 +396,28 @@ class TestDispatchComputation(unittest.TestCase):
         items = compute_dispatch(self.wf_dir, self.manifest)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].role, "reviewer")
+
+    def test_revision_dispatches_executor_for_next_walkthrough(self):
+        self._set_state(WorkflowStatus.REVISION_REQUIRED)
+        self.manifest["review_iteration"] = 1
+        items = compute_dispatch(self.wf_dir, self.manifest)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].role, "executor")
+        self.assertEqual(items[0].iteration, 2)
+
+    def test_revision_no_dispatch_when_max_reached(self):
+        self._set_state(WorkflowStatus.REVISION_REQUIRED)
+        self.manifest["review_iteration"] = 3
+        self.manifest["max_review_iterations"] = 3
+        items = compute_dispatch(self.wf_dir, self.manifest)
+        self.assertEqual(len(items), 0)
+
+    def test_revision_does_not_dispatch_when_walkthrough_exists(self):
+        self._set_state(WorkflowStatus.REVISION_REQUIRED)
+        self.manifest["review_iteration"] = 1
+        write_atomic(self.wf_dir / walkthrough_path(2), "# Already done")
+        items = compute_dispatch(self.wf_dir, self.manifest)
+        self.assertEqual(len(items), 0)
 
     def test_committing_dispatches_executor(self):
         self._set_state(WorkflowStatus.COMMITTING)

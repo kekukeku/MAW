@@ -11,7 +11,10 @@ from typing import Any, Optional
 from v2.schema import (
     APPROVE,
     CANCEL,
+    REJECT,
     REQUEST_CHANGES,
+    VALID_REVIEW_DECISIONS,
+    VALID_USER_DECISIONS,
     WorkflowStatus,
     TERMINAL_STATES,
     WAITING_STATES,
@@ -215,15 +218,7 @@ def compute_dispatch(wf_dir: Path, manifest: dict) -> list[DispatchItem]:
     elif status == WorkflowStatus.REVISION_REQUIRED:
         iteration = review_iter + 1
         if review_iter >= max_reviews:
-            # No more iterations, transition to WAITING_USER_DECISION
-            dispatch_list.append(DispatchItem(
-                key=f"{wf_id}:max_reviews:system:1",
-                role="system",
-                seat="system",
-                agent="maw",
-                phase="max_reviews",
-                iteration=1,
-            ))
+            pass  # No dispatch — try_transition will move to WAITING_USER_DECISION
         elif not walkthrough_exists(wf_dir, iteration):
             dispatch_list.append(DispatchItem(
                 key=f"{wf_id}:execution:executor:{iteration}",
@@ -356,7 +351,7 @@ def try_transition(wf_dir: Path, manifest: dict) -> bool:
             _log_transition(wf_dir, manifest, "EXECUTING", "REVIEWING", f"walkthrough {iteration} ready")
             changed = True
 
-    # REVIEWING -> REVISION_REQUIRED or COMMITTING
+    # REVIEWING -> REVISION_REQUIRED, COMMITTING, or WAITING_USER_DECISION
     elif status == WorkflowStatus.REVIEWING:
         iteration = manifest.get("review_iteration", 0) + 1
         if review_exists(wf_dir, iteration):
@@ -367,27 +362,34 @@ def try_transition(wf_dir: Path, manifest: dict) -> bool:
                 set_status(manifest, WorkflowStatus.REVISION_REQUIRED)
                 _log_transition(wf_dir, manifest, "REVIEWING", "REVISION_REQUIRED", f"review {iteration}: changes requested")
                 changed = True
-            elif decision == "APPROVE" or decision == APPROVE:
+            elif decision == APPROVE:
                 if manifest.get("review_iteration", 0) == 0:
                     increment_review_iteration(manifest)
                 requires_transition(status, WorkflowStatus.COMMITTING)
                 set_status(manifest, WorkflowStatus.COMMITTING)
                 _log_transition(wf_dir, manifest, "REVIEWING", "COMMITTING", f"review {iteration}: approved")
                 changed = True
+            elif decision == REJECT:
+                if manifest.get("review_iteration", 0) == 0:
+                    increment_review_iteration(manifest)
+                requires_transition(status, WorkflowStatus.WAITING_USER_DECISION)
+                set_status(manifest, WorkflowStatus.WAITING_USER_DECISION)
+                _log_transition(wf_dir, manifest, "REVIEWING", "WAITING_USER_DECISION", f"review {iteration}: rejected")
+                changed = True
 
-    # REVISION_REQUIRED -> REVIEWING (new walkthrough exists)
+    # REVISION_REQUIRED -> REVIEWING (next walkthrough exists) or WAITING_USER_DECISION (max reached)
     elif status == WorkflowStatus.REVISION_REQUIRED:
         iteration = manifest.get("review_iteration", 0)
         max_reviews = manifest.get("max_review_iterations", 3)
-        if iteration > max_reviews:
+        if iteration >= max_reviews:
             requires_transition(status, WorkflowStatus.WAITING_USER_DECISION)
             set_status(manifest, WorkflowStatus.WAITING_USER_DECISION)
             _log_transition(wf_dir, manifest, "REVISION_REQUIRED", "WAITING_USER_DECISION", "max review iterations exceeded")
             changed = True
-        elif walkthrough_exists(wf_dir, iteration):
+        elif walkthrough_exists(wf_dir, iteration + 1):
             requires_transition(status, WorkflowStatus.REVIEWING)
             set_status(manifest, WorkflowStatus.REVIEWING)
-            _log_transition(wf_dir, manifest, "REVISION_REQUIRED", "REVIEWING", f"walkthrough {iteration} ready after revision")
+            _log_transition(wf_dir, manifest, "REVISION_REQUIRED", "REVIEWING", f"walkthrough {iteration + 1} ready after revision")
             changed = True
 
     # COMMITTING -> CHAIR_FINAL_CHECK (commit.md exists)
@@ -434,11 +436,11 @@ def user_decision(wf_dir: Path, manifest: dict, decision: str) -> bool:
     status = WorkflowStatus(manifest["status"])
     if status not in (WorkflowStatus.WAITING_USER_APPROVAL, WorkflowStatus.WAITING_USER_DECISION):
         return False
-    valid = {APPROVE, REQUEST_CHANGES, CANCEL}
-    if decision.upper() not in valid:
+    token = decision.strip().upper()
+    if token not in VALID_USER_DECISIONS:
         return False
-    write_atomic(wf_dir / ARTIFACT_USER_DECISION, decision.upper())
-    append_event(wf_dir, {"ts": _now(), "type": "user.decision", "actor": "user", "decision": decision.upper()})
+    write_atomic(wf_dir / ARTIFACT_USER_DECISION, token)
+    append_event(wf_dir, {"ts": _now(), "type": "user.decision", "actor": "user", "decision": token})
     return True
 
 
@@ -662,8 +664,13 @@ def generate_instruction(wf_dir: Path, manifest: dict, item: DispatchItem) -> st
             "```",
             "DECISION: REQUEST_CHANGES",
             "```",
+            "or",
+            "```",
+            "DECISION: REJECT",
+            "```",
             "",
             "If REQUEST_CHANGES, list actionable, verifiable fixes.",
+            "REJECT means the work is fundamentally unacceptable — do not use lightly.",
             "",
             "## Rules",
             "- DECISION: must be on its own line.",
@@ -729,7 +736,7 @@ def _read_decision(wf_dir: Path) -> str:
     if not exists_nonempty(path):
         return ""
     text = read_file(path).strip().upper()
-    if text in {APPROVE, REQUEST_CHANGES, CANCEL}:
+    if text in VALID_USER_DECISIONS:
         return text
     return ""
 
@@ -743,7 +750,7 @@ def _parse_review_decision(wf_dir: Path, iteration: int) -> str:
         stripped = line.strip()
         if stripped.startswith("DECISION:"):
             token = stripped.split(":", 1)[1].strip().upper()
-            if token in ("APPROVE", "REQUEST_CHANGES"):
+            if token in VALID_REVIEW_DECISIONS:
                 return token
     return ""
 

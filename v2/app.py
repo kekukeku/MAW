@@ -25,9 +25,14 @@ from v2.files import (
     exists_nonempty,
     ARTIFACT_REQUEST,
     ARTIFACT_QUESTIONS,
+    ARTIFACT_ANSWERS,
     ARTIFACT_CHAIR_BRIEF,
     ARTIFACT_FINAL_PLAN,
+    ARTIFACT_USER_DECISION,
+    ARTIFACT_COMMIT,
     ARTIFACT_COMPLETION,
+    check_executor_lock,
+    load_runtime_state,
 )
 from v2.watcher import Watcher
 from v2.dispatcher import list_adapters
@@ -63,7 +68,7 @@ def cmd_create(args):
         workflow_id=workflow_id,
         target_path=target_path,
         roster=roster,
-        require_user_plan_approval=not args.skip_approval,
+        require_user_plan_approval=True,
         max_review_iterations=args.max_reviews,
     )
 
@@ -215,6 +220,83 @@ def cmd_list_workflows(args):
         print(f"  {wf_id}  {status:30s}  {created}")
 
 
+def cmd_inspect(args):
+    """Read-only inspection of a workflow. Writes nothing, changes nothing."""
+    from v2.workflow import compute_dispatch
+    from v2.schema import expected_proposals, expected_comments, WAITING_STATES
+    wf_dir = workflow_dir(args.target, args.workflow_id)
+    if not wf_dir or not wf_dir.is_dir():
+        print(f"No workflow found: {args.workflow_id}")
+        return
+
+    manifest = load_manifest(str(wf_dir))
+    status = manifest["status"]
+    roster = manifest["roster"]
+    seats = [p["seat"] for p in roster.get("planners", [])]
+
+    print(f"=== Workflow: {manifest['workflow_id']} ===")
+    print(f"Status: {status}")
+    print(f"Target: {manifest['target_path']}")
+    print(f"Review iteration: {manifest.get('review_iteration', 0)}/{manifest.get('max_review_iterations', 3)}")
+
+    print(f"\n--- Expected Artifacts ---")
+    exp_proposals = expected_proposals(roster)
+    exp_comments = expected_comments(roster)
+
+    for a in [ARTIFACT_REQUEST, ARTIFACT_CHAIR_BRIEF, ARTIFACT_QUESTIONS, ARTIFACT_ANSWERS,
+              ARTIFACT_FINAL_PLAN, ARTIFACT_USER_DECISION, ARTIFACT_COMMIT, ARTIFACT_COMPLETION]:
+        present = "PRESENT" if exists_nonempty(wf_dir / a) else "MISSING"
+        print(f"  {a}: {present}")
+
+    for p in exp_proposals:
+        present = "PRESENT" if exists_nonempty(wf_dir / p) else "MISSING"
+        print(f"  {p}: {present}")
+
+    for c in exp_comments:
+        present = "PRESENT" if exists_nonempty(wf_dir / c) else "MISSING"
+        print(f"  {c}: {present}")
+
+    # Walkthroughs and reviews
+    for d in ["walkthroughs", "reviews"]:
+        dp = wf_dir / d
+        if dp.is_dir():
+            for f in sorted(dp.glob("*.md")):
+                print(f"  {d}/{f.name}: PRESENT")
+
+    print(f"\n--- Dispatch States ---")
+    rt = load_runtime_state(wf_dir)
+    for key, rec in rt.get("dispatches", {}).items():
+        s = rec.get("status", "?")
+        print(f"  {key}: {s} (agent={rec.get('agent','?')}, attempt={rec.get('attempt',1)})")
+    if not rt.get("dispatches"):
+        print("  (no dispatch records)")
+
+    print(f"\n--- Locks ---")
+    elock = check_executor_lock(args.target)
+    if elock:
+        print(f"  Executor locked by: wf={elock.get('workflow_id')}, key={elock.get('dispatch_key')}")
+    else:
+        print("  Executor: unlocked")
+
+    print(f"\n--- Next Dispatchable Work ---")
+    items = compute_dispatch(wf_dir, manifest)
+    if items:
+        for item in items:
+            agent_hint = f" [agent={item.agent}]" if item.agent != "maw" else ""
+            print(f"  {item.key} ({item.role}/{item.phase}){agent_hint}")
+    else:
+        print("  (none)")
+
+    if status in WAITING_STATES:
+        print(f"\n--- Blocking Reason ---")
+        if status == WorkflowStatus.WAITING_USER_CLARIFICATION:
+            print("  Waiting for user answers to chair questions")
+        elif status == WorkflowStatus.WAITING_USER_APPROVAL:
+            print("  Waiting for user to APPROVE/REQUEST_CHANGES/CANCEL the final plan")
+        elif status == WorkflowStatus.WAITING_USER_DECISION:
+            print("  Waiting for user decision on outstanding issues")
+
+
 def cmd_adapters(args):
     """List available adapters."""
     adapters = list_adapters()
@@ -255,7 +337,6 @@ def main():
     p_create.add_argument("--reviewer", default="codex", help="Reviewer agent ID")
     p_create.add_argument("--request", "-r", help="Request text")
     p_create.add_argument("--request-file", help="Read request from file")
-    p_create.add_argument("--skip-approval", action="store_true", help="Skip user plan approval gate")
     p_create.add_argument("--max-reviews", type=int, default=3, help="Max review iterations")
 
     # watch
@@ -293,6 +374,11 @@ def main():
     # adapters
     sub.add_parser("adapters", help="List available adapters")
 
+    # inspect
+    p_inspect = sub.add_parser("inspect", help="Inspect workflow (read-only)")
+    p_inspect.add_argument("--target", "-t", required=True, help="Target project path")
+    p_inspect.add_argument("--workflow-id", "-w", required=True, help="Workflow ID")
+
     # read
     p_read = sub.add_parser("read", help="Read a workflow artifact")
     p_read.add_argument("--target", "-t", required=True, help="Target project path")
@@ -316,6 +402,8 @@ def main():
         cmd_list_workflows(args)
     elif args.command == "adapters":
         cmd_adapters(args)
+    elif args.command == "inspect":
+        cmd_inspect(args)
     elif args.command == "read":
         cmd_read(args)
     else:

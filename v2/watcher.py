@@ -36,6 +36,19 @@ from v2.files import (
     exists_nonempty,
     load_active_workflow_id,
     set_active_workflow,
+    load_runtime_state,
+    save_runtime_state,
+    get_dispatch_record,
+    persist_dispatch,
+    reconcile_runtime_state,
+    acquire_executor_lock,
+    release_executor_lock,
+    check_executor_lock,
+    RUNTIME_STATUS_PENDING,
+    RUNTIME_STATUS_DISPATCHED,
+    RUNTIME_STATUS_COMPLETED,
+    RUNTIME_STATUS_FAILED,
+    RUNTIME_STATUS_STALE,
 )
 from v2.workflow import (
     compute_dispatch,
@@ -87,8 +100,8 @@ class Watcher:
         self._running = False
         self._active_dispatches: dict[str, dict] = {}
         self._agent_locks: dict[str, bool] = {}
-        self._dispatch_history: dict[str, str] = {}
         self._failure_counts: dict[str, int] = {}
+        self._runtime_state: dict[str, Any] = {"schema_version": 1, "dispatches": {}}
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -199,27 +212,52 @@ class Watcher:
         return changed
 
     def _should_dispatch(self, item: DispatchItem, manifest: dict) -> bool:
-        # Already completed
-        if item.key in self._dispatch_history:
-            return False
-        # Already in-flight
+        record = get_dispatch_record(self._runtime_state, item.key)
+        if record:
+            status = record.get("status", "")
+            if status == RUNTIME_STATUS_COMPLETED:
+                return False
+            if status == RUNTIME_STATUS_DISPATCHED:
+                return False
         if item.key in self._active_dispatches:
             return False
-        # Agent locked (another dispatch for same agent in-flight)
         if self._agent_locks.get(item.agent):
             return False
-        # Too many failures
         if self._failure_counts.get(item.key, 0) >= self.max_retries:
             logger.warning("Max retries exceeded for %s", item.key)
             return False
-        # System/internal items (maw agent) are auto-handled
         if item.agent == "maw":
             return False
+        # Executor lock: only one executor per target
+        if item.role == "executor":
+            existing = check_executor_lock(self.target_path)
+            if existing and existing.get("workflow_id") != self.workflow_id:
+                logger.info("Executor locked by workflow %s", existing.get("workflow_id"))
+                return False
         return True
 
     def _schedule_dispatch(self, wf_dir: Path, manifest: dict, item: DispatchItem) -> bool:
         logger.info("Dispatching %s -> agent=%s role=%s phase=%s",
                      item.key, item.agent, item.role, item.phase)
+
+        now = _now()
+        attempt = self._failure_counts.get(item.key, 0) + 1
+
+        # Persist pending dispatch to runtime_state
+        record = {
+            "status": RUNTIME_STATUS_DISPATCHED,
+            "agent": item.agent,
+            "role": item.role,
+            "seat": item.seat,
+            "iteration": item.iteration,
+            "attempt": attempt,
+            "expected_output": self._expected_output_for(item, wf_dir),
+            "started_at": now,
+            "updated_at": now,
+            "invocation_id": None,
+            "last_error": None,
+        }
+        persist_dispatch(wf_dir, self._runtime_state, item.key, record)
 
         # Generate instruction
         instruction = generate_instruction(wf_dir, manifest, item)
@@ -229,20 +267,24 @@ class Watcher:
         # Lock agent
         self._agent_locks[item.agent] = True
 
+        # Acquire executor lock if applicable
+        if item.role == "executor":
+            acquire_executor_lock(self.target_path, self.workflow_id, item.key)
+
         # Record dispatch
         self._active_dispatches[item.key] = {
             "item": item,
-            "started_at": _now(),
-            "timeout_at": _now(),
+            "started_at": now,
+            "timeout_at": now,
         }
 
         append_event(wf_dir, {
-            "ts": _now(),
+            "ts": now,
             "type": "agent.dispatched",
             "role": item.role,
             "seat": item.seat,
             "agent": item.agent,
-            "attempt": self._failure_counts.get(item.key, 0) + 1,
+            "attempt": attempt,
             "key": item.key,
         })
 
@@ -252,14 +294,20 @@ class Watcher:
         return True
 
     def _handle_result(self, wf_dir: Path, manifest: dict, item: DispatchItem, result: DispatchResult) -> None:
-        # Release agent lock
         self._agent_locks[item.agent] = False
+        if item.role == "executor":
+            release_executor_lock(self.target_path)
+        now = _now()
 
         if result.success:
-            self._dispatch_history[item.key] = "completed"
+            record = get_dispatch_record(self._runtime_state, item.key)
+            if record:
+                record["status"] = RUNTIME_STATUS_COMPLETED
+                record["updated_at"] = now
+                persist_dispatch(wf_dir, self._runtime_state, item.key, record)
             self._failure_counts.pop(item.key, None)
             append_event(wf_dir, {
-                "ts": _now(),
+                "ts": now,
                 "type": "agent.completed",
                 "key": item.key,
                 "agent": item.agent,
@@ -267,25 +315,126 @@ class Watcher:
             logger.info("Completed %s", item.key)
         else:
             self._failure_counts[item.key] = self._failure_counts.get(item.key, 0) + 1
+            attempt = self._failure_counts[item.key]
+            record = get_dispatch_record(self._runtime_state, item.key)
+            if record:
+                record["status"] = RUNTIME_STATUS_FAILED
+                record["attempt"] = attempt
+                record["last_error"] = result.error or "unknown"
+                record["updated_at"] = now
+                persist_dispatch(wf_dir, self._runtime_state, item.key, record)
             append_event(wf_dir, {
-                "ts": _now(),
+                "ts": now,
                 "type": "agent.failed",
                 "key": item.key,
                 "agent": item.agent,
                 "reason": result.error or "unknown",
-                "attempt": self._failure_counts[item.key],
+                "attempt": attempt,
             })
-            logger.warning("Failed %s: %s (attempt %d)", item.key, result.error, self._failure_counts[item.key])
+            logger.warning("Failed %s: %s (attempt %d)", item.key, result.error, attempt)
 
             if self._failure_counts[item.key] >= self.max_retries:
                 mark_failed(wf_dir, manifest, f"Agent {item.agent} failed {item.key} after {self.max_retries} retries: {result.error}")
 
-        # Remove from active
         self._active_dispatches.pop(item.key, None)
 
     def _check_completions(self, wf_dir: Path, manifest: dict) -> bool:
-        """Check for async dispatch completions (when auto_run=False). Not used in sync mode."""
-        return False
+        """Check all active dispatches for artifact completion (async/manual mode)."""
+        changed = False
+        now = _now()
+        to_complete = []
+
+        for key, info in list(self._active_dispatches.items()):
+            item = info["item"]
+            expected_output = self._expected_output_for(item, wf_dir)
+            if expected_output and exists_nonempty(wf_dir / expected_output):
+                to_complete.append((key, item))
+
+        for key, item in to_complete:
+            self._agent_locks[item.agent] = False
+            if item.role == "executor":
+                release_executor_lock(self.target_path)
+            record = get_dispatch_record(self._runtime_state, key)
+            if record:
+                record["status"] = RUNTIME_STATUS_COMPLETED
+                record["updated_at"] = now
+                persist_dispatch(wf_dir, self._runtime_state, key, record)
+            self._failure_counts.pop(key, None)
+            self._active_dispatches.pop(key, None)
+            append_event(wf_dir, {
+                "ts": now,
+                "type": "agent.completed",
+                "key": key,
+                "agent": item.agent,
+            })
+            logger.info("Async-completed %s (artifact detected)", key)
+            changed = True
+
+        # Also check stale dispatches for timeout
+        to_stale = []
+        for key, info in list(self._active_dispatches.items()):
+            started = info.get("started_at", "")
+            if started:
+                try:
+                    from datetime import datetime
+                    started_dt = datetime.fromisoformat(started)
+                    elapsed = (datetime.now(started_dt.tzinfo) - started_dt).total_seconds()
+                    if elapsed > self.agent_timeout:
+                        to_stale.append((key, info["item"]))
+                except (ValueError, TypeError):
+                    pass
+
+        for key, item in to_stale:
+            self._agent_locks[item.agent] = False
+            if item.role == "executor":
+                release_executor_lock(self.target_path)
+            record = get_dispatch_record(self._runtime_state, key)
+            if record:
+                record["status"] = RUNTIME_STATUS_STALE
+                record["updated_at"] = now
+                persist_dispatch(wf_dir, self._runtime_state, key, record)
+            self._active_dispatches.pop(key, None)
+            append_event(wf_dir, {
+                "ts": now,
+                "type": "agent.stale",
+                "key": key,
+                "agent": item.agent,
+            })
+            logger.warning("Stale dispatch %s (timeout)", key)
+            changed = True
+
+        return changed
+
+    def _expected_output_for(self, item, wf_dir: Path) -> str:
+        """Return the workflow-relative expected output path for a dispatch item."""
+        from v2.schema import (
+            proposal_path, comment_path, walkthrough_path, review_path,
+            ARTIFACT_CHAIR_BRIEF, ARTIFACT_FINAL_PLAN, ARTIFACT_COMMIT,
+            ARTIFACT_COMPLETION, ARTIFACT_QUESTIONS,
+        )
+        if item.role == "chair" and item.phase in ("clarify",):
+            return ARTIFACT_CHAIR_BRIEF
+        elif item.role == "planner" and item.phase == "proposal":
+            return proposal_path(item.seat)
+        elif item.role == "planner" and item.phase == "comment":
+            key_parts = item.key.split(":")
+            if len(key_parts) >= 3:
+                seat_pair = key_parts[2]
+                parts = seat_pair.split("_on_")
+                if len(parts) == 2:
+                    return comment_path(parts[0], parts[1])
+            return ""
+        elif item.role == "chair" and item.phase == "synthesis":
+            return ARTIFACT_FINAL_PLAN
+        elif item.role == "executor" and item.phase == "execution":
+            return walkthrough_path(item.iteration)
+        elif item.role == "reviewer" and item.phase == "review":
+            return review_path(item.iteration)
+        elif item.role == "executor" and item.phase == "commit":
+            return ARTIFACT_COMMIT
+        elif item.role == "chair" and item.phase == "final_check":
+            return ARTIFACT_COMPLETION
+        return ""
 
     def _cancel_all_dispatches(self) -> None:
         for key, info in list(self._active_dispatches.items()):
@@ -310,6 +459,17 @@ class Watcher:
                      len(manifest["roster"]["planners"]),
                      manifest["roster"]["executor"],
                      manifest["roster"]["reviewer"])
+
+        # Load and reconcile runtime state
+        self._runtime_state = load_runtime_state(wf_dir)
+        reconcile_runtime_state(wf_dir, self._runtime_state)
+
+        # Recover failure counts from runtime_state
+        for key, rec in self._runtime_state.get("dispatches", {}).items():
+            att = rec.get("attempt", 1)
+            status = rec.get("status", "")
+            if status in (RUNTIME_STATUS_FAILED, RUNTIME_STATUS_STALE):
+                self._failure_counts[key] = att
 
     def _handle_signal(self, signum, frame):
         logger.info("Received signal %s, stopping...", signum)
