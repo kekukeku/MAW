@@ -171,6 +171,20 @@ Planner 使用席位 ID，而不是 Agent ID：
 
 同一 Agent 若承擔多個待辦，watcher 必須序列派送，不能同時喚醒同一 Agent 實例。
 
+### 4.1 角色寫入邊界
+
+角色名稱與實際 Agent 分離，但每種角色的寫入權限固定：
+
+| 角色 | 可讀 | 可寫 | 禁止 |
+|---|---|---|---|
+| Chair | 專案、需求、所有規劃與實作歷程 | Chair brief、問題、final plan、completion | 修改程式碼、代替使用者批准 |
+| Planner | 專案、需求、Chair brief、評論階段的其他 proposals | 自己席位的 proposal 與 comments | 修改程式碼、覆寫他人產物 |
+| Executor | final plan、reviews、專案 | 程式碼、walkthrough、commit record | 寫 Reviewer 決策、跳過 review |
+| Reviewer | final plan、walkthrough、diff、測試結果 | 自己 iteration 的 review | 修改程式碼、commit |
+| 使用者／MAW UI | 所有工作流產物 | 使用者回答與 Gate decision | — |
+
+即使同一 Agent 分飾多角，也必須依目前被喚醒的角色遵守該次寫入邊界，不能因為底層是同一 Agent 而混用權限。
+
 ---
 
 ## 5. 檔案契約
@@ -461,6 +475,15 @@ Walkthrough 至少包含：
 - 未解問題。
 - branch 與 commit 前狀態。
 
+Executor 在交給 Reviewer 前必須完成自我檢查，並寫入 walkthrough：
+
+- 每項 acceptance criterion 是否完成。
+- 未完成或偏離事項及理由。
+- 必要測試是否全部執行。
+- 使用者可見變更是否更新文件。
+- 是否引入未授權 breaking change。
+- 是否出現不必要的 dependency 或 lockfile churn。
+
 ### 8.7 Reviewer
 
 Reviewer 讀取：
@@ -485,6 +508,27 @@ DECISION: REQUEST_CHANGES
 
 REQUEST_CHANGES 必須是可執行、可驗證的修正事項。
 
+Review 內容必須分級：
+
+- **Blocking Issues**：功能錯誤、測試失敗、安全問題、未達 acceptance criteria 或違反明確架構邊界。
+- **Non-Blocking Notes**：不影響本次正確性的設計建議、風格意見或取捨提醒。
+- **Optional Follow-ups**：適合留到未來任務的改善。
+
+只有 Blocking Issues 可以導致 `REQUEST_CHANGES`。Reviewer 不得因個人偏好或非必要重構阻擋完成。
+
+允許的 Reviewer decision 僅有：
+
+```text
+DECISION: APPROVE
+DECISION: REQUEST_CHANGES
+DECISION: REJECT
+```
+
+- `APPROVE`：進入 commit。
+- `REQUEST_CHANGES`：回到 Executor 補強。
+- `REJECT`：停止自動循環，交回 Chair 與使用者。
+- 缺少、重複或未知 decision：保持等待並回報格式錯誤，不得猜測。
+
 ### 8.8 Commit 與 Chair 最終檢查
 
 Reviewer APPROVE 後才可 commit。
@@ -499,6 +543,15 @@ Executor 產出 `commit.md`：
 Chair 讀取完整歷程與最終 diff，產出 `completion.md`。
 
 若有小問題但不阻礙完成，交由使用者決定；若有重大疏失，重新進入修正，不得假裝完成。
+
+Chair 最終 reconciliation 必須確認：
+
+- `commit.md` 記載的 commit SHA 真實存在。
+- final diff 與最新 walkthrough 一致。
+- Reviewer 的 APPROVE 對應最新 review iteration。
+- 最終測試結果存在且與 commit 對應。
+- completion 連結 final plan、最新 walkthrough、最新 review 與 commit。
+- 沒有殘留 `.tmp`、stale lock 或未完成 dispatch。
 
 ---
 
@@ -539,6 +592,7 @@ Polling 的優點：
 - 寫入 events。
 - 重啟後恢復。
 - 防止重複 dispatch。
+- 提供無副作用 inspect 模式。
 
 ### 9.3 Watcher 不做
 
@@ -577,6 +631,8 @@ workflow_001:review:reviewer:2
 
 已 completed 的 key 不得再次執行。
 
+Watcher 只根據「尚未完成的 dispatch key」與合法狀態轉移派工，不因某個狀態或檔案持續存在而重複喚醒 Agent。
+
 ### 9.5 Lock
 
 - 不同 Agent 的 Planner 工作可並行。
@@ -586,6 +642,32 @@ workflow_001:review:reviewer:2
 - watcher 重啟時，必須辨認 stale in-flight lock 並安全恢復。
 
 不建立獨立 Resource Token Protocol。
+
+### 9.6 Inspect 模式
+
+Watcher 提供完全無副作用的診斷命令：
+
+```bash
+python watcher.py --inspect
+```
+
+輸出：
+
+- workflow 與目前狀態。
+- expected artifact set。
+- 已完成與缺少的產物。
+- active／stale locks。
+- 已派送與待派送工作。
+- 下一個合法狀態。
+- 目前阻塞原因。
+
+Inspect 不得：
+
+- 寫檔。
+- 改狀態。
+- 取得 lock。
+- 喚醒 Agent。
+- 送出通知。
 
 ---
 
@@ -629,6 +711,14 @@ manual
 - `manual`：建立 instruction 並通知使用者到已開啟的 Agent 執行；watcher 等待產物。
 
 之後逐一新增真實 Agent adapter，不先假設所有 GUI Agent 都能自動觸發。
+
+每個真實 adapter 可依能力使用自動 CLI、`agentapi`、本機 hook 或 inbox。若自動喚醒不可用，必須能安全降級為 manual handoff：
+
+1. 保留同一 dispatch key。
+2. 建立完整 instruction file。
+3. 在 UI／CLI 顯示應由哪個 Agent 執行。
+4. Watcher 等待同一 expected output。
+5. 不因降級而重建工作或改變角色。
 
 ### 10.2 Registry
 
@@ -747,6 +837,9 @@ UI 排在 CLI、mock E2E 與真實 adapter spike 之後。
 - failed／timeout 工作不得被視為完成。
 - 同一 target 同時只有一個可寫 Executor。
 - 一般工作流不得修改 watcher、AGENTS 或 TEAM_RULES。
+- 不使用 `shell=True` 組合未驗證的使用者輸入。
+- Adapter stdout／stderr 必須保存供診斷，不可全部丟棄。
+- Markdown 供人閱讀；正式狀態與 dispatch 資料使用 JSON，不以寬鬆 regex 作主要狀態來源。
 
 ---
 
@@ -790,6 +883,7 @@ UI 排在 CLI、mock E2E 與真實 adapter spike 之後。
 - per-agent lock。
 - per-target Executor lock。
 - retry、timeout、cancel、restart recovery。
+- `--inspect` 無副作用診斷。
 
 驗收：
 
@@ -827,6 +921,7 @@ UI 排在 CLI、mock E2E 與真實 adapter spike 之後。
 - final plan 使用者 Gate。
 - Executor walkthrough。
 - Reviewer REQUEST_CHANGES。
+- Reviewer REJECT 交回 Chair／使用者。
 - Executor 補強。
 - Reviewer APPROVE。
 - Executor commit。
@@ -918,6 +1013,8 @@ MAW/
 - 同 Agent 序列化。
 - 不同 Agent 並行。
 - per-target Executor lock。
+- 只有狀態轉變／未完成 dispatch 才會派工。
+- inspect 不產生任何副作用。
 
 ### Artifact
 
@@ -940,6 +1037,9 @@ MAW/
 
 - walkthrough 才觸發 review。
 - Decision token 嚴格解析。
+- Blocking／Non-Blocking／Optional 分級。
+- 非 Blocking 意見不得造成 REQUEST_CHANGES。
+- REJECT 停止自動循環並交回使用者。
 - Review iteration 不覆寫。
 - 超過上限交回使用者。
 - 未 APPROVE 不 commit。
@@ -1060,6 +1160,13 @@ MAW_PORT=8002
 ✓ Executor／Reviewer 可多輪修正
 ✓ Reviewer APPROVE 前不 commit
 ✓ commit 後由 Chair 最終檢查
+✓ 角色寫入邊界不因同一 Agent 分飾多角而失效
+✓ Adapter 自動喚醒失敗時可降級為同一 dispatch 的 manual handoff
+✓ Watcher inspect 模式完全無副作用
+✓ Executor walkthrough 包含固定自我檢查
+✓ Reviewer 意見分級且只有 Blocking Issues 可阻擋
+✓ APPROVE、REQUEST_CHANGES、REJECT token 行為明確
+✓ Chair 完成 commit 後 reconciliation
 ✓ timeout、cancel、retry、restart recovery 可用
 ✓ 至少一條真實 Agent 流程完成到 commit
 ✓ UI 不依賴 v1
