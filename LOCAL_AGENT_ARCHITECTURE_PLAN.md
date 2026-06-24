@@ -1,608 +1,1175 @@
-# MAW 全面本機化與多進程架構改造方案
+# MAW 本機多 Agent 極簡架構改造計畫
 
-> **Version**: 1.1  
-> **Status**: 設計草案 — 待審核後分階段執行  
-> **取代範圍**: Phase 6–8 的 context-aware API Council 路線（`project_context` / Scout / Explorer / `llm_provider` 整線退役）  
-> **North Star**: MAW 只做 **編排器（Orchestrator）**；Agent 之間透過 **`MAW_workflow/` 檔案契約** 傳遞（與現行 Executor / Reviewer 完全相同），WebSocket **僅供 UI 看日誌**，不作 Agent IPC。所有「思考」與「讀檔」在本機 Agent 子進程內完成，**零外部 LLM API、零 Token 計費、零預先打包上下文**。
-
----
-
-## 0. 為什麼要改（問題陳述）
-
-現行架構的核心假設是：**Council 透過 HTTP 呼叫遠端模型，MAW 負責把目標專案「讀進 Prompt」**。
-
-實務上這條路徑有結構性缺陷：
-
-| 問題 | 現況 | 本機化後 |
-|------|------|----------|
-| Token 成本 | L0–L3 context pack + 三階段多模型呼叫，費用不可控 | Agent 自行讀檔，MAW 不計 Token |
-| 讀檔複雜度 | `project_context`（~1300 LOC）+ Scout + Explorer + 截斷/審計 | 刪除；Agent 用本機工具讀 `target/` |
-| 權限透明度 | MAW 代讀再轉發，使用者難以感知實際觸及範圍 | Agent 進程 = 使用者 OS 身份，路徑由啟動參數明示 |
-| 架構厚重 | Council API 層與 Executor 層兩套啟動/通訊模式 | 統一 `adapters/` + **`MAW_workflow/` 檔案契約**（不新增 Agent IPC） |
-| 可行性 vs 可用性 | 技術上可行，但無人願意維護 API 金鑰與 context 治理 | 與使用者已有 Agent 工具鏈對齊 |
-
-**結論**：保留 MAW 的 **工作流狀態機、雙重人工閘門、匯出契約、WebSocket 即時日誌**；替換 **Council 的資訊來源與執行載體**。
+> **Version**: 2.0
+> **Status**: 正式改造方案 — 待核准後執行
+> **核心原則**: 檔案即協定、Watcher 負責喚醒、Adapter 負責啟動、Agent 自行讀取專案
+> **取代範圍**: 現有 API Council、LLM Provider、Context Pack、Scout、Explorer，以及前後段不一致的編排方式
 
 ---
 
-## 1. 目標架構（Target Architecture）
+## 0. 改造結論
 
-### 1.1 一句話
+MAW 不需要建立一套新的本機 Agent 通訊平台，也不需要要求 Agent 實作 MAW 專用 WebSocket Client、SDK 或常駐連線。
 
-```text
-User → MAW Hub (FastAPI) → spawn 本機 Agent 子進程（Council ×3 → Executor → Reviewer）
-         ↓ Hub 只傳 CLI 參數（指向 MAW_workflow/ 內的檔案路徑），不讀 target 原始碼
-     <target-project>/MAW_workflow/  ← Agent 之間的 SSOT（檔案契約，與現行後半段相同）
-         ↓ stdout/stderr
-     /ws/maw  ← 僅轉發日誌給 UI（現有機制，不擴充 room）
-```
+MAW 已經具備足夠的基本元件：
 
-### 1.2 分層職責
+- `AGENTS.md`：告訴 Agent 如何工作。
+- `TEAM_RULES.md`：定義角色、交接、審查與安全規則。
+- `watcher.py`：觀察狀態與產物，喚醒下一位 Agent。
+- `adapters/`：把「喚醒角色」轉換成各 Agent 的實際啟動方式。
+- `MAW_workflow/`：保存狀態、計畫、評論、實作紀錄與審查結果。
 
-```mermaid
-flowchart TB
-  subgraph UI["static/index.html"]
-    P0[Panel 0: 專案與 Agent 設定]
-    P1[Panel 1: 任務啟動]
-    P2[Panel 2: Gate #1 讀 PLANNING 產物]
-    P3[Panel 3–5: 執行 / 日誌 / 提交]
-  end
+新的 MAW 只做：
 
-  subgraph Hub["MAW Hub — loop_orchestrator.py"]
-    FSM[Workflow FSM]
-    SPAWN[_run_subprocess / launcher]
-    LOCK[Resource Lock 序列化]
-    EXP[export.py]
-  end
+1. 讓使用者選擇專案、角色與 Agent。
+2. 建立工作流檔案。
+3. 啟動或確認 `watcher.py` 正在運作。
+4. 由 watcher 根據檔案狀態呼叫指定 Agent。
+5. 顯示進度、產物與等待使用者決定的事項。
 
-  subgraph WF["MAW_workflow/ 檔案契約"]
-    PLAN[PLANNING/council_session/]
-    TASK[TASKS/]
-    REV[REVIEWS/]
-    STATE[AGENT_STATE.md]
-  end
-
-  subgraph Agents["本機 Agent 子進程 — 互不連線"]
-    PROP[trigger_proposer]
-    CRIT[trigger_critic]
-    CHAIR[trigger_chairman]
-    EXEC[trigger_executor]
-    REVW[trigger_review]
-  end
-
-  WS["/ws/maw — UI 日誌 only"]
-
-  UI --> Hub
-  Hub --> SPAWN --> Agents
-  Agents -->|讀寫| WF
-  Agents -.->|讀寫程式碼| TARGET["target 專案根目錄"]
-  SPAWN -->|stdout| WS --> UI
-  Hub --> EXP --> WF
-  Hub -->|輪詢| STATE
-```
-
-| 層級 | 職責 | 不做 |
-|------|------|------|
-| **MAW Hub** | `create_subprocess_exec` 啟動 agent、`_run_subprocess` 串流日誌、FSM、Gate、寫入 session 初始檔 | LLM 推論、讀 target 原始碼、Agent 間訊息轉發 |
-| **Council Agents** | 讀 `PLANNING/` 上游產物 + target 資料夾，寫入下游 `.md` | 連線其他 agent、連線 WebSocket |
-| **Executor / Reviewer** | **現行不變** — `TASKS/`、`AGENT_STATE.md`、`REVIEWS/` | — |
-| **`MAW_workflow/`** | 前後段統一 SSOT；Council 用 `PLANNING/council_session/` 子目錄 | — |
-| **`/ws/maw`** | UI 訂閱 `task_num` 看 stdout 日誌（`loop_orchestrator._append_log`） | Agent IPC、會議 room |
-
-### 1.3 Council 三角色對照（概念映射）
-
-| 原 Karpathy 階段 | 本機角色 | 進程數 | 行為 |
-|------------------|----------|--------|------|
-| Stage 1 獨立提案 | **Proposer** | 1+（可配置多 Proposer 再合併） | 讀 target，產出初步實作計畫 |
-| Stage 2 匿名互評 | **Council Reviewer** | 1+ | 讀 Stage 1 產出 + target，評議/排序 |
-| Stage 3 主席綜述 | **Chairman** | 1 | 彙整為可匯出的最終計畫 Markdown |
-
-> **設計決策**：預設 **3 進程各 1 實例**（符合「三方會議」）。若使用者僅有單一 Agent 執行檔，Hub 以 **Resource Lock 序列化** 依序啟動同一 binary 三次、以 `role` 環境變數區分（見 §4.3）。
+所有分析、讀檔、提案、實作與審查，都由使用者本機已開啟或可被 adapter 喚醒的 Agent 完成。
 
 ---
 
-## 2. 通訊協定 — 沿用 `MAW_workflow/` 檔案契約（不新增 WebSocket room）
-
-### 2.1 設計原則（v1.1 修正）
-
-後半段已驗證的模式：
+## 1. North Star
 
 ```text
-Hub spawn 子進程 → Agent 讀寫 MAW_workflow/ 檔案 → Hub 等 exit code / 輪詢 AGENT_STATE.md
-WebSocket 只轉發 subprocess stdout → UI 看日誌
-Agent 之間零網路連線
+使用者提出需求
+  ↓
+Chair 釐清需求
+  ↓
+Planner 1–4 各自提案
+  ↓
+Planner 交叉評論其他提案
+  ↓
+Chair 綜整 final_plan.md
+  ↓
+使用者批准開工
+  ↓
+Executor 實作並產出 walkthrough
+  ↓
+Reviewer 審查
+  ├─ REQUEST_CHANGES → Executor 補強 → 再送 Reviewer
+  └─ APPROVE → Executor commit
+  ↓
+Chair 檢查完整歷程
+  ↓
+通知使用者完成或等待使用者處理小問題
 ```
 
-**Council 前半段必須用同一模式**，不為會議另建 WebSocket room。理由：
+一句話標準：
 
-| 若用 WS 當 Agent IPC | 問題 |
-|---------------------|------|
-| Agent 需實作 WS client | 與現有 trigger 腳本風格割裂 |
-| Hub 需轉發、排序、持久化訊息 | 重複造輪子；檔案已是 SSOT |
-| 除錯困難 | 使用者無法直接打開 `.md` 看會議產物 |
-| 與 Executor 兩套通訊 | 違背「架構簡潔」目標 |
-
-### 2.2 Council 檔案契約（新增子目錄）
-
-Hub 在啟動 Council 前建立 session 目錄（在 target 的 `MAW_workflow/` 內，git-ignored）：
-
-```text
-<target>/MAW_workflow/
-├── PLANNING/
-│   └── council_session_<id>/
-│       ├── prompt.md              # Hub 寫入：使用者任務
-│       ├── stage1_propose.md      # Proposer 寫入
-│       ├── stage2_review.md       # Critic 寫入（讀 stage1）
-│       └── stage3_plan.md         # Chairman 寫入（讀 stage1+2）→ Gate #1 審閱 SSOT
-├── scripts/
-│   ├── trigger_proposer.py        # adapters 安裝（與 trigger_executor 同模式）
-│   ├── trigger_critic.py
-│   └── trigger_chairman.py
-```
-
-Gate #1 核准後，`export.py` 將 `stage3_plan.md` 複製/渲染為 `PLANNING/council_NNN.md`，並建立 `TASKS/task_NNN.md`（與現行相同）。
-
-### 2.3 編排順序（`local_council.py`）
-
-與 `_spawn_executor` 相同：Hub 依序 `await _run_subprocess(...)`，**等上一階段 exit 0 且 output 檔存在** 才啟動下一階段。
-
-```text
-1. Hub 寫 prompt.md
-2. spawn trigger_proposer.py  --session-dir ... --prompt prompt.md --out stage1_propose.md
-3. spawn trigger_critic.py    --session-dir ... --in stage1_propose.md --out stage2_review.md
-4. spawn trigger_chairman.py  --session-dir ... --in stage1,stage2 --out stage3_plan.md
-5. state → COUNCIL_PENDING_APPROVAL；UI 用 GET API 讀 stage*.md 顯示 Gate #1
-```
-
-**並行模式**（可選）：Stage 1 多個 Proposer 各寫 `stage1_propose_<agent>.md`，Chairman 讀全部。Hub 仍只 spawn + 等檔案，無 WS。
-
-**序列化模式**（VRAM 不足）：`resource_lock.py` 在 Hub 內排隊 spawn，同一時間只跑一個子進程——**不需要** `resource.granted` WS 訊息。
-
-### 2.4 啟動參數（與 Executor 對齊）
-
-```bash
-python3 MAW_workflow/scripts/trigger_proposer.py \
-  --session-dir MAW_workflow/PLANNING/council_session_abc \
-  --prompt prompt.md \
-  --output stage1_propose.md
-```
-
-Agent 腳本內部：
-
-- `PROJECT_ROOT` = `MAW_workflow` 的上一層（與 mock executor 相同）
-- 自行讀取 target 原始碼、自行推理
-- 完成後 `sys.exit(0)` + 寫入 `--output`
-
-**不要求** WebSocket client、不要求連線 MAW。
-
-### 2.5 WebSocket — 零改動
-
-| 項目 | 動作 |
-|------|------|
-| `/ws/maw` | **保留現狀** — subscribe by `task_num`，收 log/status |
-| `ws-manager.js` | **不擴充** room |
-| Council 日誌 | 來自 `_run_subprocess` 的 stdout（label=`proposer`/`critic`/`chairman`） |
-| Gate #1 內容 | UI 透過 `GET /api/maw/council/session/{id}` 讀檔案內容，非 WS 推送 |
+> MAW 是由檔案驅動的本機多 Agent 工作流；Agent 透過產物交接，watcher 透過 adapter 喚醒下一位角色。
 
 ---
 
-## 3. 徹底剝離清單（Deletion Manifest）
+## 2. 非目標
 
-> **原則**：刪除檔案 + 刪除 import + 刪除測試 + 刪除 UI + 刪除文件，**不留死碼、不留 env 幽靈、不留「暫時 deprecated」**。
+本次改造明確不做：
 
-### 3.1 整檔刪除（Python / 設定 / 測試）
+- 不建立 Agent WebSocket Meeting Room。
+- 不建立 `maw_agent_sdk`。
+- 不要求 Agent 支援 MAW 專用 CLI 參數。
+- 不讓 MAW 遞迴讀取或打包目標專案原始碼。
+- 不由 MAW 呼叫任何模型 API。
+- 不由 MAW 保存模型 API Key。
+- 不維持 Karpathy Stage 1／2／3 資料格式。
+- 不做匿名提案或匿名排名。
+- 不建立複雜的 Resource Token Protocol。
+- 不把 Agent 對話內容同步進中央訊息匯流排。
+- 不為每種 Agent 重寫一套工作流邏輯。
 
-| 路徑 | 理由 |
-|------|------|
-| `council/llm_provider.py` | 外部 API 路由 |
-| `council/openrouter.py` | OpenRouter 客戶端 |
-| `council/direct_resolver.py` | Direct API 探測 |
-| `council/vendors.json` | 供應商端點表 |
-| `council/council.py` | Karpathy 字串拼接 + `query_model`（由 `local_council.py` 取代） |
-| `project_context.py` | Context pack 管線 |
-| `scout.py` | Scout 推薦 |
-| `explorer.py` | Explorer brief |
-| `context_smoke_test.py` | API context E2E |
-| `test_llm_provider.py` | — |
-| `test_openrouter.py` | — |
-| `test_direct_resolver.py` | — |
-| `test_project_context.py` | — |
-| `test_scout.py` | — |
-| `test_explorer.py` | — |
-| `test_context_api.py` | — |
-| `test_council.py` | 舊 council mock 測試（改寫為 local council 測試） |
+各 Agent 是否在其自身內部使用本機模型、訂閱服務或雲端能力，由使用者與該 Agent 自行管理；MAW 不介入。
 
-### 3.2 文件退役（移至 `docs/archive/` 或刪除）
+---
 
-| 路徑 | 理由 |
-|------|------|
-| `CONTEXT_AWARE_COUNCIL_REFACTOR_PLAN.md` | 架構已廢棄 |
-| `CONTEXT_RELEASE_HARDENING_PLAN.md` | Phase 7 專屬 |
-| `CONTEXT_RELIABILITY_PLAN.md` | Phase 8 專屬 |
-| `docs/CONTEXT_GOVERNANCE.md` | reasonCode / riskFlags 治理 |
-| `docs/PHASE7_UI_CHECKLIST.md` | Context UI 回歸 |
-| `docs/PHASE8_UI_CHECKLIST.md` | 未執行即作廢 |
+## 3. 角色模型
 
-### 3.3 `loop_orchestrator.py` 刪除區塊（精確手術）
+### 3.1 支援角色
 
-| 區塊 | 現行函式/行為 | 動作 |
-|------|---------------|------|
-| Context 收集 | `_run_council_task` 內 `build_context_pack`、`run_explorer_brief` | **刪除** |
-| Auto-approve 審計 | `_can_auto_approve_council` 及 context_audit 分支 | **刪除**（Gate #1 一律人工，或僅保留「使用者勾選」） |
-| Chairman API 摘要 | `_chairman_final_summary` → `query_model` | **刪除**（主席在本機進程產出） |
-| Council 啟動 | 呼叫 `run_council()` | **替換**為 `LocalCouncilRunner.start()` |
+每次工作流包含：
 
-**保留**：`_spawn_executor`、`_spawn_reviewer`、`_monitor_workflow`、Gate #2、`resume_unfinished`、WebSocket 廣播、git commit 流程。
+| 角色 | 數量 | 責任 |
+|---|---:|---|
+| Chair | 1 | 釐清需求、主持規劃、產出最終計畫、最後驗收與回報 |
+| Planner | 1–4 | 獨立提案並評論其他 Planner 的提案 |
+| Executor | 1 | 依核准計畫實作、補強、commit |
+| Reviewer | 1 | 審查實作並回覆 APPROVE 或 REQUEST_CHANGES |
 
-### 3.4 `main.py` 刪除路由
+### 3.2 角色與 Agent 分離
 
-| 路由 | 動作 |
-|------|------|
-| `POST /api/maw/context/preview` | 刪除 |
-| `POST /api/maw/context/explorer/preview` | 刪除 |
-| `POST /api/maw/context/scout/dry-run`（若有） | 刪除 |
-| `GET /api/setup/llm-models` | 刪除 |
-| `POST /api/setup/test-llm` | 刪除 |
-| `GET /api/maw/config` 內 `councilModels` / `chairmanModel` | 刪除模型列表 |
+角色是本輪工作的身份；Agent 是實際執行工作的本機程式。
 
-**新增**：
+同一 Agent 可以：
 
-| 路由 | 用途 |
-|------|------|
-| `GET /api/maw/agents` | 列出 registry 內 agent + 支援的 roles |
-| `GET /api/maw/council/session/{id}` | 讀取 `PLANNING/council_session_<id>/stage*.md` 供 Gate #1 UI |
+- 同時被指定為 Chair 與 Planner。
+- 承擔多個 Planner 席位。
+- 同時擔任 Planner 與 Executor。
+- 在使用者明確選擇下同時擔任 Executor 與 Reviewer。
+- 一人分飾全部角色。
 
-### 3.5 `export.py` 簡化
+若同一 Agent 被分配多個可同時執行的角色，watcher 必須序列化呼叫，避免同一 Agent 實例同時接收多個任務。
 
-刪除：
+### 3.3 每次工作流可覆寫
 
-- `_render_context_summary`、`contextPack` / `contextAuditSummary` / `autoApprovePolicy` 匯出欄位
-- 對 `project_context.build_context_audit_summary` 的依賴
+專案可以保存預設角色配置，但使用者每次開始工作流時均可覆寫：
+
+```json
+{
+  "chair": "codex",
+  "planners": [
+    {"seat": "planner_a", "agent": "antigravity"},
+    {"seat": "planner_b", "agent": "grok_build"},
+    {"seat": "planner_c", "agent": "codex"}
+  ],
+  "executor": "antigravity",
+  "reviewer": "grok_build"
+}
+```
+
+Planner 使用穩定席位 ID，而非 Agent ID 作為檔名，確保同一 Agent 分飾多席時仍可區分產物。
+
+---
+
+## 4. 檔案即協定
+
+### 4.1 目標專案結構
+
+```text
+<target-project>/
+├── AGENTS.md
+├── TEAM_RULES.md
+└── MAW_workflow/
+    ├── watcher.py
+    ├── WORKFLOW_STATE.json
+    ├── ACTIVE_WORKFLOW
+    ├── workflows/
+    │   └── workflow_001/
+    │       ├── manifest.json
+    │       ├── request.md
+    │       ├── chair_brief.md
+    │       ├── questions.md
+    │       ├── answers.md
+    │       ├── proposals/
+    │       │   ├── planner_a.md
+    │       │   ├── planner_b.md
+    │       │   └── planner_c.md
+    │       ├── comments/
+    │       │   ├── planner_a_on_b.md
+    │       │   ├── planner_a_on_c.md
+    │       │   ├── planner_b_on_a.md
+    │       │   ├── planner_b_on_c.md
+    │       │   ├── planner_c_on_a.md
+    │       │   └── planner_c_on_b.md
+    │       ├── final_plan.md
+    │       ├── user_decision.md
+    │       ├── task.md
+    │       ├── walkthroughs/
+    │       │   ├── walkthrough_001.md
+    │       │   └── walkthrough_002.md
+    │       ├── reviews/
+    │       │   ├── review_001.md
+    │       │   └── review_002.md
+    │       ├── commit.md
+    │       ├── completion.md
+    │       └── events.jsonl
+    ├── adapters/
+    └── archive/
+```
+
+### 4.2 為何每個工作流使用獨立目錄
+
+- 所有歷程天然集中。
+- 不需 conversation database。
+- UI 可直接讀取同一組產物。
+- watcher 重啟後可從檔案恢復。
+- 不同工作流不會覆寫彼此檔案。
+- Planner 數量與評論數量可以動態計算。
+- 使用者可完整檢查 Agent 做過什麼。
+
+### 4.3 Manifest
+
+`manifest.json` 是工作流設定快照：
+
+```json
+{
+  "schema_version": 1,
+  "workflow_id": "workflow_001",
+  "target_path": "/absolute/path/to/project",
+  "created_at": "2026-06-24T12:00:00+08:00",
+  "status": "CHAIR_CLARIFYING",
+  "roster": {
+    "chair": "codex",
+    "planners": [
+      {"seat": "planner_a", "agent": "antigravity"},
+      {"seat": "planner_b", "agent": "grok_build"},
+      {"seat": "planner_c", "agent": "codex"}
+    ],
+    "executor": "antigravity",
+    "reviewer": "grok_build"
+  },
+  "review_iteration": 0,
+  "max_review_iterations": 3,
+  "require_user_plan_approval": true,
+  "last_transition_at": "2026-06-24T12:00:00+08:00"
+}
+```
+
+已開始的工作流不得因使用者修改專案預設角色而改變 roster；只有新工作流使用新設定。
+
+### 4.4 Events
+
+`events.jsonl` 是 append-only 稽核紀錄，不是 Agent 間的必要通訊管道：
+
+```json
+{"ts":"...","type":"workflow.created","actor":"maw"}
+{"ts":"...","type":"agent.dispatched","role":"planner_a","agent":"antigravity","attempt":1}
+{"ts":"...","type":"artifact.ready","role":"planner_a","path":"proposals/planner_a.md"}
+{"ts":"...","type":"state.changed","from":"PLANNING","to":"PEER_REVIEW"}
+```
+
+事件只由 watcher／MAW 寫入；Agent 只需產出指定檔案。
+
+---
+
+## 5. 工作流狀態
+
+### 5.1 正式狀態
+
+```text
+CREATED
+CHAIR_CLARIFYING
+WAITING_USER_CLARIFICATION
+PLANNING
+PEER_REVIEW
+CHAIR_SYNTHESIS
+WAITING_USER_APPROVAL
+EXECUTING
+REVIEWING
+REVISION_REQUIRED
+COMMITTING
+CHAIR_FINAL_CHECK
+COMPLETED
+WAITING_USER_DECISION
+CANCELLED
+FAILED
+```
+
+### 5.2 轉移規則
+
+| 當前狀態 | 完成條件 | 下一狀態 |
+|---|---|---|
+| CREATED | manifest、request 建立完成 | CHAIR_CLARIFYING |
+| CHAIR_CLARIFYING | Chair 判斷需求完整 | PLANNING |
+| CHAIR_CLARIFYING | Chair 產出待確認問題 | WAITING_USER_CLARIFICATION |
+| WAITING_USER_CLARIFICATION | 使用者寫入回答 | CHAIR_CLARIFYING |
+| PLANNING | 所有 Planner 提案完成 | PEER_REVIEW |
+| PEER_REVIEW | 所有必要評論完成 | CHAIR_SYNTHESIS |
+| CHAIR_SYNTHESIS | `final_plan.md` 完成 | WAITING_USER_APPROVAL |
+| WAITING_USER_APPROVAL | 使用者批准 | EXECUTING |
+| WAITING_USER_APPROVAL | 使用者要求調整 | CHAIR_CLARIFYING |
+| EXECUTING | walkthrough 完成 | REVIEWING |
+| REVIEWING | Reviewer 要求修改 | REVISION_REQUIRED |
+| REVISION_REQUIRED | Executor 新 walkthrough 完成 | REVIEWING |
+| REVIEWING | Reviewer APPROVE | COMMITTING |
+| COMMITTING | Executor commit 完成 | CHAIR_FINAL_CHECK |
+| CHAIR_FINAL_CHECK | 無重大問題 | COMPLETED |
+| CHAIR_FINAL_CHECK | 有小問題待決定 | WAITING_USER_DECISION |
+| 任意非終止狀態 | 使用者取消 | CANCELLED |
+| 任意非終止狀態 | 不可恢復錯誤 | FAILED |
+
+### 5.3 不以檔案存在作為唯一完成判定
+
+為避免 Agent 先建立空檔後再寫入造成誤觸發，產物必須使用原子完成方式：
+
+1. Agent 寫入 `*.tmp`。
+2. 完成後 rename 成正式檔名。
+
+或由 adapter 在 Agent 結束成功後驗證正式檔案存在且非空，再通知 watcher。
+
+---
+
+## 6. 規劃會議流程
+
+### 6.1 Chair 釐清需求
+
+Chair 讀取：
+
+- `request.md`
+- 目標專案
+- `AGENTS.md`
+- `TEAM_RULES.md`
+
+Chair 必須二選一：
+
+1. 需求足夠清楚：產出 `chair_brief.md`。
+2. 需求仍有會改變方案的重要歧義：產出 `questions.md`。
+
+`chair_brief.md` 至少包含：
+
+- 使用者真正目標。
+- 已知限制。
+- 非目標。
+- Planner 必須調查的問題。
+- 最終計畫應回答的事項。
+
+不得要求使用者回答不影響方案的瑣碎問題。
+
+### 6.2 Planner 獨立提案
+
+每位 Planner：
+
+- 讀取 `request.md`、`chair_brief.md` 與目標專案。
+- 不先讀其他 Planner 尚未完成的草稿。
+- 產出自己的 `proposals/<seat>.md`。
+
+每份提案至少包含：
+
+- 對現況的理解。
+- 建議方案。
+- 預計修改／刪除範圍。
+- 實施順序。
+- 風險。
+- 驗證方法。
+- 仍需 Chair 決定的事項。
+
+### 6.3 Planner 交叉評論
+
+所有提案完成後，每位 Planner 評論其餘每一份提案。
+
+若 Planner 數量為 `N`，必要評論數為：
+
+```text
+N × (N - 1)
+```
+
+| Planner 數 | 提案數 | 評論數 |
+|---:|---:|---:|
+| 1 | 1 | 0 |
+| 2 | 2 | 2 |
+| 3 | 3 | 6 |
+| 4 | 4 | 12 |
+
+評論檔命名：
+
+```text
+comments/<reviewer-seat>_on_<proposal-seat>.md
+```
+
+評論必須指出：
+
+- 同意之處。
+- 遺漏之處。
+- 不合理或風險過高之處。
+- 可吸收進最終計畫的具體建議。
+
+不需要匿名，不做排名，也不計算平均分數。
+
+### 6.4 Chair 綜整
+
+Chair 讀取：
+
+- 使用者需求與回答。
+- Chair brief。
+- 所有提案。
+- 所有評論。
+- 必要的目標專案內容。
+
+Chair 直接產出 `final_plan.md`，不需要保留 Karpathy 三階段格式。
+
+`final_plan.md` 必須能直接交給 Executor，至少包含：
+
+1. 目標與完成定義。
+2. 保留項目。
+3. 刪除項目。
+4. 新增或修改項目。
+5. 檔案級改造清單。
+6. 執行順序。
+7. 資料或設定遷移。
+8. 安全限制。
+9. 測試與驗收命令。
+10. 回滾界線。
+11. 明確非目標。
+
+若材料揭露新的重大歧義，Chair 可以再次進入 `WAITING_USER_CLARIFICATION`，而不是自行猜測。
+
+### 6.5 使用者批准
+
+產出 `final_plan.md` 後，工作流必須停在 `WAITING_USER_APPROVAL`。
+
+使用者可以：
+
+- `APPROVE`：開始實作。
+- `REQUEST_CHANGES`：附上修改意見，重新交給 Chair。
+- `CANCEL`：終止工作流。
+
+未獲批准前，不得呼叫 Executor。
+
+---
+
+## 7. 實作與審查流程
+
+### 7.1 Executor
+
+Executor 讀取：
+
+- `final_plan.md`
+- `AGENTS.md`
+- `TEAM_RULES.md`
+- Reviewer 前一輪意見（若有）
+- 目標專案
+
+Executor 必須：
+
+1. 在安全工作分支上實作。
+2. 執行計畫要求的測試。
+3. 產出 `walkthroughs/walkthrough_NNN.md`。
+4. 將工作交給 Reviewer。
+
+Walkthrough 至少包含：
+
+- 實際修改內容。
+- 與 `final_plan.md` 的差異及原因。
+- 刪除內容。
+- 測試命令與結果。
+- 未解問題。
+- 目前 branch 與 commit 狀態。
+
+### 7.2 Reviewer
+
+Reviewer 必須讀取：
+
+- `final_plan.md`
+- 最新 walkthrough。
+- 實際 git diff。
+- 相關測試結果。
+- 前一輪 review 與修正紀錄。
+
+Reviewer 產出 `reviews/review_NNN.md`：
+
+```text
+DECISION: APPROVE
+```
+
+或：
+
+```text
+DECISION: REQUEST_CHANGES
+```
+
+`REQUEST_CHANGES` 必須列出可執行、可驗證的修正事項。
+
+### 7.3 修改循環
+
+Reviewer 要求修改時：
+
+1. watcher 將狀態設為 `REVISION_REQUIRED`。
+2. 喚醒 Executor。
+3. Executor 依 review 補強。
+4. 產出下一版 walkthrough。
+5. watcher 再喚醒 Reviewer。
+
+循環不得覆寫舊檔；每輪使用遞增編號。
+
+達到 `max_review_iterations` 仍未通過時，停止於 `WAITING_USER_DECISION`，不得無限循環。
+
+### 7.4 Commit
+
+Reviewer APPROVE 後：
+
+1. watcher 喚醒 Executor 進入 commit 階段。
+2. Executor 確認工作樹與測試狀態。
+3. Executor 建立 commit。
+4. 產出 `commit.md`，記錄 branch、commit SHA、測試與變更摘要。
+5. watcher 喚醒 Chair。
+
+是否 push／建立 PR 不應由工作流自行推定，必須遵循專案規則或使用者明確設定。
+
+### 7.5 Chair 最終檢查
+
+Chair 讀取完整歷程：
+
+- final plan
+- walkthroughs
+- reviews
+- commit record
+- 最終 diff／測試
+
+若無重大問題：
+
+- 產出 `completion.md`。
+- 將狀態設為 `COMPLETED`。
+- 通知使用者。
+
+若只有不阻礙完成的小問題：
+
+- 寫入 `completion.md` 的注意事項。
+- 將狀態設為 `WAITING_USER_DECISION`。
+- 交由使用者決定是否追加工作。
+
+若發現重大疏失，不得假裝完成；必須重新進入修正或等待使用者決定。
+
+---
+
+## 8. Watcher 職責
+
+### 8.1 Watcher 要做的事
+
+- 讀取 active workflow 與 manifest。
+- 驗證目前狀態所需產物。
+- 計算下一個尚未完成的角色工作。
+- 呼叫 adapter。
+- 記錄 dispatch、完成、錯誤與狀態轉移。
+- 防止同一角色任務重複啟動。
+- 對同一 Agent 的多角色工作進行序列化。
+- 管理 timeout、retry、cancel。
+- 在重啟後從檔案恢復。
+
+### 8.2 Watcher 不做的事
+
+- 不閱讀原始碼內容來做決策。
+- 不生成提案、評論或計畫。
+- 不解析自然語言來猜測 Agent 是否完成。
+- 不直接呼叫模型 API。
+- 不保存 Agent 對話。
+- 不修改應用程式碼。
+- 不替 Reviewer 做審查判斷。
+
+### 8.3 Dispatch Key
+
+每個工作項目使用穩定 dispatch key：
+
+```text
+<workflow_id>:<phase>:<role-or-seat>:<iteration>
+```
+
+例如：
+
+```text
+workflow_001:proposal:planner_a:1
+workflow_001:comment:planner_b_on_a:1
+workflow_001:review:reviewer:2
+```
+
+Watcher 在 `WORKFLOW_STATE.json` 記錄：
+
+- dispatch key
+- agent ID
+- PID 或 adapter invocation ID
+- attempt
+- started_at
+- timeout_at
+- completion artifact
+- final status
+
+相同 dispatch key 若已完成，不得再次呼叫。
+
+### 8.4 並行規則
+
+- 不同 Agent 的 Planner 提案可以並行。
+- 同一 Agent 承擔多個 Planner 席位時必須序列執行。
+- 交叉評論必須等待所有提案完成。
+- Chair、Executor、Reviewer 預設一次只允許一個工作項目。
+- 同一目標專案同一時間只允許一個 Executor 修改程式碼。
+
+不需要獨立 `resource_lock.py`；簡單的 per-agent 與 per-target lock 即可放在 watcher 內。
+
+---
+
+## 9. Adapter 契約
+
+### 9.1 Adapter 的唯一責任
+
+Adapter 將標準工作描述轉成特定 Agent 的啟動方式。
+
+標準輸入：
+
+```json
+{
+  "workflow_id": "workflow_001",
+  "role": "planner",
+  "seat": "planner_a",
+  "target_path": "/absolute/path/to/project",
+  "instruction_file": "MAW_workflow/workflows/workflow_001/instructions/planner_a.md",
+  "expected_output": "MAW_workflow/workflows/workflow_001/proposals/planner_a.md"
+}
+```
+
+Adapter 可以使用：
+
+- 現有 GUI／TUI Agent 的本機觸發方式。
+- `agentapi`。
+- Agent 自己的 CLI。
+- 自訂 shell command。
+- 已開啟 Agent 的 inbox／hook。
+
+工作流本身不關心其底層方式。
+
+### 9.2 Registry
+
+Registry 只描述能力與 adapter，不保存臆測的 binary 路徑：
+
+```json
+{
+  "id": "antigravity",
+  "label": "Antigravity",
+  "adapter": "antigravity",
+  "supports": ["chair", "planner", "executor", "reviewer"],
+  "parallel_capacity": 1,
+  "requires_running_app": true
+}
+```
+
+### 9.3 Preflight
+
+開始工作流前，MAW 必須檢查：
+
+- 所選 Agent 是否存在。
+- Adapter 是否可用。
+- 需要預先開啟的 Agent 是否正在運作。
+- Agent 是否支援被指派的角色。
+- 目標專案是否可讀。
+- Executor 是否具有必要寫入能力。
+- watcher 是否可啟動。
+
+若其中一位 Planner 不可用，不能靜默減少 Planner 人數；必須讓使用者重新選擇或明確繼續。
+
+---
+
+## 10. AGENTS.md 與 TEAM_RULES.md
+
+### 10.1 AGENTS.md
+
+保持精簡，只放所有角色共通的執行原則：
+
+- 先讀指定 instruction 與專案規則。
+- 只處理被指派的角色工作。
+- 不覆寫其他角色產物。
+- 以 tmp + rename 完成產物。
+- 不自行跳過使用者 Gate。
+- 不在未授權階段 commit。
+- 遇到阻塞時寫明原因，不假裝完成。
+
+### 10.2 TEAM_RULES.md
+
+保存完整治理規則：
+
+- 各角色責任。
+- 提案與評論要求。
+- 交接檔案格式。
+- Executor／Reviewer 循環。
+- 使用者批准規則。
+- Git 與 commit 規則。
+- 最大重試與失敗處理。
+- 同一 Agent 分飾多角時的隔離規則。
+
+### 10.3 角色 Instruction
+
+Watcher 在每次 dispatch 前生成短小、具體的 instruction file；不要把全部歷史塞進 prompt。
+
+Instruction 只提供：
+
+- 目前角色。
+- 必讀檔案。
+- 預期產物。
+- 完成條件。
+- 禁止事項。
+
+Agent 自行讀取目標專案與所列產物。
+
+---
+
+## 11. MAW UI
+
+### 11.1 Panel 0：本機 Agent 與專案
 
 保留：
 
-- `export_to_target`、task slug、atomic lock、`PLANNING/council_NNN.md`（內容改為 **主席最終計畫 + 會議 transcript 連結**）
+- 專案選擇。
+- 目標路徑驗證。
+- Scaffold。
+- Adapter 安裝／檢查。
+- Agent 是否已開啟的狀態。
 
-### 3.6 `static/index.html` 刪除 UI
+刪除：
 
-| 區塊 | 行號參考（約） | 動作 |
-|------|----------------|------|
-| Panel 0 LLM Provider / LiteLLM / OpenRouter / Direct keys | 156–189 | **刪除** |
-| Panel 0 Test Connection | `testLlm()` | **刪除** |
-| Panel 1 Council model 多選 + Chairman 下拉 | 303–341, JS 718+ | **刪除** |
-| Context bar / file selector / Scout toggle / Explorer toggle | 277–380+ | **刪除** |
-| Gate #1 context audit card / provenance tables | 1200–1500 區段 | **替換**為 Council transcript 檢視 |
+- LLM Provider。
+- LiteLLM。
+- OpenRouter。
+- Direct API Keys。
+- 模型清單。
+- Test LLM Connection。
 
-**新增 Panel 0**：
+新增：
 
-- Council 三角色 Agent 選擇（Proposer / Critic / Chairman 各選一個 registry agent）
-- 「單一 Agent 序列模式」勾選（VRAM 不足時）
+- Chair 選擇。
+- Planner 數量 1–4。
+- 每個 Planner 席位的 Agent 選擇。
+- Executor 選擇。
+- Reviewer 選擇。
+- 允許角色重疊。
+- Agent preflight 結果。
 
-**新增 Panel 2 Gate #1**：
+### 11.2 工作流畫面
 
-- 分頁顯示 `stage1_propose.md` / `stage2_review.md` / `stage3_plan.md`（HTTP 讀檔）
-- Chairman 最終計畫即 `stage3_plan.md`
+UI 顯示：
 
-### 3.7 環境變數與依賴
+- 目前狀態。
+- Roster。
+- 哪些角色正在工作。
+- 已完成與待完成的產物。
+- 提案與評論矩陣。
+- `final_plan.md`。
+- Walkthrough／Review 歷程。
+- Commit record。
+- Chair completion。
 
-**`.env.example` 刪除**：
+UI 不需要顯示 Agent 的逐 token 輸出。
 
-```env
+### 11.3 使用者互動
+
+UI 需要提供：
+
+- 回答 Chair 問題。
+- 批准 final plan。
+- 要求 Chair 修改 final plan。
+- 取消工作流。
+- 在 review loop 超限時決定下一步。
+- 對 Chair 最終提出的小問題作出指示。
+
+---
+
+## 12. 保留、重寫與刪除
+
+### 12.1 保留並精簡
+
+| 現有部分 | 處理 |
+|---|---|
+| `adapters/` | 保留，擴充為所有角色共用 |
+| `maw_paths.py` | 保留 |
+| 目標專案 scaffold | 保留，改成新檔案結構 |
+| FastAPI + UI | 保留為控制台 |
+| `/ws/maw` | 僅保留 UI 狀態通知 |
+| subprocess log streaming | 可保留給 adapter 診斷 |
+| target validation | 保留並改驗證新契約 |
+| Git 安全檢查 | 保留 |
+
+### 12.2 重寫
+
+| 檔案 | 新責任 |
+|---|---|
+| `loop_orchestrator.py` | 瘦身為工作流 API 與 watcher 控制，不再直接執行 Council／Executor／Reviewer 邏輯 |
+| `export.py` | 改為建立 workflow 目錄與檔案，不再匯出 Karpathy conversation |
+| `setup_api.py` | 改為專案、Agent、adapter、watcher preflight |
+| `static/index.html` | 改為 roster、artifact 與 user gate UI |
+| `adapters/installer.py` | 安裝／更新 watcher 與角色 adapter |
+| `adapters/registry.json` | 能力式 registry |
+| `template_target_project/` | 改為完整極簡工作流模板 |
+
+### 12.3 新增
+
+建議最小新增：
+
+```text
+watcher.py
+workflow_state.py
+workflow_files.py
+adapters/dispatcher.py
+templates/AGENTS.md
+templates/TEAM_RULES.md
+```
+
+若可保持清楚，也可將 `workflow_state.py` 與 `workflow_files.py` 合併；不要為了分層而分層。
+
+### 12.4 徹底刪除
+
+```text
+council/llm_provider.py
+council/openrouter.py
+council/direct_resolver.py
+council/vendors.json
+council/council.py
+council/config.py
+project_context.py
+scout.py
+explorer.py
+context_smoke_test.py
+```
+
+以及其專屬測試：
+
+```text
+test_llm_provider.py
+test_openrouter.py
+test_direct_resolver.py
+test_council.py
+test_project_context.py
+test_scout.py
+test_explorer.py
+test_context_api.py
+```
+
+### 12.5 舊文件
+
+下列 context／API Council 時代文件不留在 active docs：
+
+```text
+CONTEXT_AWARE_COUNCIL_REFACTOR_PLAN.md
+CONTEXT_RELEASE_HARDENING_PLAN.md
+CONTEXT_RELIABILITY_PLAN.md
+docs/CONTEXT_GOVERNANCE.md
+docs/PHASE7_UI_CHECKLIST.md
+docs/PHASE8_UI_CHECKLIST.md
+```
+
+若需要保留歷史，統一移入：
+
+```text
+docs/archive/api-council-era/
+```
+
+README、`FINAL_SPEC.md`、`implementation_plan.md`、`OPTIMIZATION_PLAN.md` 必須同步重寫或退役，不能留下現行架構仍支援模型 API 的錯誤描述。
+
+---
+
+## 13. 舊資料與設定清理
+
+### 13.1 `.env`
+
+刪除 MAW 專屬的：
+
+```text
 LLM_PROVIDER
 LITELLM_API_BASE
 LITELLM_API_KEY
 OPENROUTER_API_KEY
 OPENAI_API_KEY
 ANTHROPIC_API_KEY
-...（所有供應商金鑰）
+GOOGLE_API_KEY
+DEEPSEEK_API_KEY
+KIMI_API_KEY
+QWEN_API_KEY
+GROK_API_KEY
 DEFAULT_COUNCIL_MODELS
 DEFAULT_CHAIRMAN_MODEL
 ```
 
-**保留**：
+保留或新增：
 
-```env
+```text
 TARGET_PROJECT_PATH
-ALLOW_AUTO_COMMIT
-EXECUTOR_TIMEOUT_SECONDS
-REVIEWER_TIMEOUT_SECONDS
+MAW_MOCK_MODE
+WATCHER_POLL_INTERVAL
+AGENT_TIMEOUT_SECONDS
+MAX_AGENT_RETRIES
 MAX_REVIEW_ITERATIONS
-MAW_MOCK_MODE          # 改為：啟動 mock 本機 agent script，非 API mock
-MAW_INFERENCE_SLOTS=1  # Resource Lock 並發上限
+MAW_HOST=127.0.0.1
+MAW_PORT=8002
 ```
 
-**`pyproject.toml`**：移除未使用的 HTTP 客戶端依賴（若僅 council 使用）；保留 `fastapi`、`uvicorn`、`websockets`、`httpx`（若 setup 仍需要）。
+不得自動刪除使用者現有 `.env` 中的秘密；升級時提供一次性檢查與明確清除提示。
 
-### 3.8 剝離驗證閘（每階段必跑）
+### 13.2 Setup state
+
+移除 `~/.agent-cowork/setup_state.json` 中：
+
+- `llm_test_ok`
+- `llm_tested_at`
+- `llm_provider`
+- `vendor_routes`
+
+新增 adapter health cache 時，必須使用新 schema version，避免誤讀舊資料。
+
+### 13.3 舊 Conversations
+
+舊 `data/conversations/`：
+
+- 不匯入新工作流。
+- 升級時可整體移到 `data/archive/conversations/`。
+- 新程式不得依賴 Stage 1／2／3 schema。
+
+### 13.4 Dependencies
+
+在刪除 API provider 後重新檢查：
+
+- 若 `httpx` 無其他用途則移除。
+- 若 Agent 不使用 WebSocket，`websockets` 只保留給 FastAPI／UI 所需部分。
+- 更新 `uv.lock`。
+
+---
+
+## 14. 安全規則
+
+- MAW 預設只綁定 `127.0.0.1`。
+- Council／Planner／Chair 階段不得修改應用程式碼。
+- Reviewer 預設唯讀，不得 commit。
+- 只有 Executor 可修改程式碼。
+- 只有在 Reviewer APPROVE 後，Executor 才可 commit。
+- Agent 只接收其角色必要的 instruction 與路徑。
+- Adapter 啟動子程序時使用最小必要環境變數。
+- 不把 MAW `.env` 全量傳遞給 Agent。
+- 所有輸出路徑必須限制在目前 workflow 目錄。
+- watcher 不跟隨可逃離 workflow／target root 的 symlink。
+- 每次 dispatch 均有 timeout。
+- Cancel 必須終止對應 process group 或取消 adapter invocation。
+- 同一 target 同時只有一個可寫 Executor。
+- `AGENTS.md`、`TEAM_RULES.md` 與 watcher 規則不得被一般工作流自行修改。
+
+---
+
+## 15. 實施階段
+
+### Phase 0：固定新契約
+
+先只建立規格與 mock，不刪舊架構。
+
+- 定義 manifest、狀態、產物命名與 decision token。
+- 定義 Planner 1–4 與評論矩陣。
+- 定義角色重疊與序列化規則。
+- 建立新 `AGENTS.md`、`TEAM_RULES.md` 模板。
+- 建立 mock adapter。
+
+驗收：
+
+- 單元測試可從任意 Planner 數量算出正確工作項目。
+- 所有狀態轉移都有合法前置條件。
+
+### Phase 1：Watcher 驅動的規劃會議
+
+- 建立新 watcher。
+- 跑通 Chair clarify。
+- 跑通 1–4 Planner 提案。
+- 跑通交叉評論。
+- 跑通 Chair synthesis。
+- 跑通使用者問答與 plan approval。
+
+驗收：
+
+- 不呼叫任何模型 API。
+- 不由 MAW 讀取專案內容。
+- mock Agent 可只靠檔案完成 Gate #1。
+- watcher 重啟後不重複已完成工作。
+
+### Phase 2：接上既有 Executor／Reviewer
+
+- 將 Executor／Reviewer 也改由同一 watcher 與 dispatcher 觸發。
+- 產出版本化 walkthrough 與 review。
+- 支援 REQUEST_CHANGES 循環。
+- Reviewer APPROVE 後由 Executor commit。
+- Chair 完成最終檢查。
+
+驗收：
+
+- 前後段使用同一套 roster、dispatch、state 與 artifact 原則。
+- 不再由 `loop_orchestrator.py` 分別硬編碼 Executor 與 Reviewer 啟動命令。
+
+### Phase 3：真實 Agent 驗證
+
+至少驗證：
+
+- 一個 Agent 分飾全部角色。
+- 三個不同 Agent 擔任 Chair／Planner／Executor Reviewer。
+- 同一 Agent 承擔兩個 Planner 席位。
+- 四位 Planner 的 4 份提案與 12 份評論。
+- Agent 未開啟時 preflight 阻擋。
+- Agent 中途失敗後可 retry。
+- MAW／watcher 重啟恢復。
+
+至少一條真實完整流程必須完成到 commit，才可刪除舊架構。
+
+### Phase 4：切換 UI 與正式入口
+
+- 新 roster UI 成為唯一入口。
+- 新 workflow artifact UI 取代 Council Stage UI。
+- 移除模型、context、Scout、Explorer UI。
+- `/ws/maw` 只推送 watcher 狀態與產物更新。
+- 新流程成為預設。
+
+### Phase 5：徹底剝離舊架構
+
+- 刪除 §12.4 所列檔案。
+- 移除所有 import、route、env、setup state、UI、測試與文件殘留。
+- 移除 conversation export。
+- 移除 context audit 與 auto-approve context policy。
+- 移除 chairman API final summary。
+- 更新依賴與 lock file。
+
+此階段完成後，不保留舊 API Council feature flag。
+
+### Phase 6：收尾與發布
+
+- 重寫 README、Final Spec 與安裝說明。
+- 提供升級／清理指南。
+- 完成全測與真實 E2E。
+- 驗證 loopback-only。
+- 驗證 repo 無 API Council 活躍程式碼。
+- 建立乾淨 release commit。
+
+---
+
+## 16. 建議 Commit／PR 切分
+
+```text
+01 workflow schema + templates + state tests
+02 watcher planning phases + mock adapters
+03 planner matrix + peer comments + chair synthesis
+04 user clarification + plan approval gates
+05 unified dispatcher for executor/reviewer
+06 walkthrough-review-revision-commit loop
+07 real agent adapters + preflight
+08 roster/artifact UI
+09 remove API council and provider layer
+10 remove context/scout/explorer layer
+11 docs, migration cleanup, dependency cleanup
+```
+
+每一批都必須：
+
+- 可獨立測試。
+- 不混入無關重構。
+- 明確列出新增與刪除。
+- 合併後主流程仍可運作。
+
+---
+
+## 17. 測試策略
+
+### 17.1 狀態與排程
+
+- 每個合法狀態轉移。
+- 非法跳階阻擋。
+- dispatch idempotency。
+- watcher restart recovery。
+- timeout、retry、cancel。
+- per-agent 序列化。
+- per-target Executor lock。
+
+### 17.2 Planner 組合
+
+- 1 Planner：1 proposal、0 comments。
+- 2 Planners：2 proposals、2 comments。
+- 3 Planners：3 proposals、6 comments。
+- 4 Planners：4 proposals、12 comments。
+- 同 Agent 多席位。
+- 不同 Agent 並行。
+- 缺少任一必要評論時不得進入 Chair synthesis。
+
+### 17.3 使用者 Gate
+
+- Chair 提問後停止。
+- 使用者回答後恢復。
+- final plan 未批准不得執行。
+- request changes 返回 Chair。
+- cancel 為終止狀態。
+
+### 17.4 Executor／Reviewer
+
+- walkthrough 才能觸發 review。
+- review token 嚴格解析。
+- REQUEST_CHANGES 產生新 iteration。
+- 舊 walkthrough／review 不被覆寫。
+- 超過最大循環交還使用者。
+- 未 APPROVE 不得 commit。
+- commit 後才喚醒 Chair。
+
+### 17.5 E2E
+
+至少保留：
+
+1. 全 mock 單 Agent 完整流程。
+2. 全 mock 三 Agent 完整流程。
+3. 四 Planner 評論矩陣。
+4. 一次 REQUEST_CHANGES 後 APPROVE。
+5. Chair clarification。
+6. watcher crash/restart。
+7. 真實 Agent 完整流程。
+
+測試數量不是目標；狀態、交接與恢復行為才是目標。
+
+---
+
+## 18. 剝離驗證
+
+Active code 不得再出現：
 
 ```bash
-# 不得再出現外部 LLM 相關符號
-rg -i "litellm|openrouter|query_model|build_context_pack|scout_suggestions|run_explorer" \
-  --glob '!docs/archive/**' --glob '!*.md'
+rg -n -i \
+  "litellm|openrouter|query_model|DEFAULT_COUNCIL_MODELS|DEFAULT_CHAIRMAN_MODEL|build_context_pack|context_audit|scout_suggestions|run_explorer_brief|Karpathy Stage" \
+  --glob '!docs/archive/**'
+```
 
-# 測試
-MAW_MOCK_MODE=1 uv run pytest -q
+檢查舊路由：
+
+```bash
+rg -n \
+  "/api/setup/llm-models|/api/setup/test-llm|/api/maw/context" \
+  --glob '!docs/archive/**'
+```
+
+完整驗證：
+
+```bash
+uv run python -m unittest discover -q
+uv run python smoke_test.py
+```
+
+若專案恢復使用 pytest，亦應執行：
+
+```bash
+uv run pytest -q
 ```
 
 ---
 
-## 4. 新核心模組設計
+## 19. Definition of Done
 
-### 4.1 目錄結構（改造後）
+改造只有在下列條件全部成立時才算完成：
 
 ```text
-MAW/
-├── main.py                      # 精簡路由
-├── loop_orchestrator.py         # FSM + 子進程管理
-├── export.py                    # 精簡匯出
-├── local_council.py             # NEW: Council 三階段 spawn 編排（呼叫 launcher）
-├── resource_lock.py             # NEW: Hub 內 spawn 排隊（可選）
-├── adapters/
-│   ├── registry.json            # 擴充 council 腳本模板
-│   ├── launcher.py              # NEW: 統一 spawn（Council + Executor 共用）
-│   ├── installer.py             # 擴充：安裝 trigger_proposer/critic/chairman
-│   └── templates/
-│       ├── council/             # NEW: 與 executor 同風格的 trigger_*.py.tpl
-│       ├── executor/
-│       └── reviewer/
-├── council/
-│   ├── config.py                # 精簡：MOCK_MODE、timeouts
-│   └── storage.py               # Gate #1 核准記錄（可選）
-├── data/
-│   ├── conversations/           # 精簡或移除（產物已在 MAW_workflow/）
-│   └── workflows.json
-└── static/
-    ├── index.html               # 精簡 UI
-    └── ws-manager.js            # 不修改
+✓ MAW 不直接呼叫任何 LLM API
+✓ MAW 不保存模型 API Key
+✓ MAW 不讀取或打包目標專案原始碼給 Council
+✓ Chair、Planner、Executor、Reviewer 全由本機 Agent adapter 驅動
+✓ 使用者可為每次工作流自由指定所有角色
+✓ Planner 數量可設定為 1、2、3、4
+✓ 同一 Agent 可分飾多角且不發生重複並行呼叫
+✓ Planner 提案與交叉評論數量動態正確
+✓ Chair 可向使用者提問並等待回答
+✓ final_plan.md 未經批准不會啟動 Executor
+✓ Executor／Reviewer 可完成多輪修改與再審
+✓ Reviewer APPROVE 前不會 commit
+✓ Executor commit 後由 Chair 做最終檢查
+✓ watcher 重啟後可從檔案恢復且不重複已完成工作
+✓ 所有重要歷程皆保留為人類可讀檔案
+✓ 前半段會議與後半段實作使用同一套工作流原則
+✓ API Council、Provider、Context、Scout、Explorer 程式與 UI 已徹底移除
+✓ README、規格、安裝流程只描述新架構
+✓ 至少一條真實 Agent 流程完成到 commit
 ```
 
-### 4.2 `adapters/registry.json` 擴充 schema
+---
 
-```json
-{
-  "id": "grok_build",
-  "label": "Grok Build",
-  "kind": "gui",
-  "binary": {
-    "council": "/Applications/Grok.app/.../grok-cli",
-    "executor": null,
-    "reviewer": null
-  },
-  "templates": {
-    "council_proposer": "templates/council/grok_proposer.sh.tpl",
-    "council_critic": "templates/council/grok_critic.sh.tpl",
-    "council_chairman": "templates/council/grok_chairman.sh.tpl",
-    "executor": "templates/executor/mock_executor.py.tpl",
-    "reviewer": "templates/reviewer/mock_review.js.tpl"
-  },
-  "supports_roles": ["council_proposer", "council_critic", "council_chairman", "executor", "reviewer"],
-  "inference_weight": "heavy"
-}
-```
-
-`adapters/launcher.py` 統一：
-
-```python
-async def spawn_agent(role: str, agent_id: str, *, target_path: str, room: str, ...) -> Subprocess
-```
-
-Council 與 Executor 皆呼叫此函式。
-
-### 4.3 `resource_lock.py` — VRAM / 推論序列化（Hub 內排隊）
-
-**問題**：三個 Agent 若各載入本地 LLM，易 OOM。
-
-**策略**（可配置）：
-
-| 模式 | 行為 | 適用 |
-|------|------|------|
-| `parallel` | 三階段依序 spawn（預設）；每階段結束才下一階段 | CLI Agent 連雲端帳號 |
-| `serialized` | `MAW_INFERENCE_SLOTS=1`：全域只有一個 agent 子進程活著 | 本機 GGUF / 單 GPU |
-
-實作：Hub 內 `asyncio.Semaphore`，在 `_run_subprocess` 前 `acquire`、退出後 `release`。**Agent 腳本無需感知鎖**——與現行 executor 相同，啟動即跑。
-
-### 4.4 `local_council.py` — 會議編排
-
-取代 `council/council.py`：
-
-```python
-class LocalCouncilRunner:
-    async def run_session(
-        self,
-        orchestrator: LoopOrchestrator,
-        wf: dict,
-        *,
-        prompt: str,
-        roster: CouncilRoster,
-    ) -> CouncilResult:
-        """
-        1. 建立 MAW_workflow/PLANNING/council_session_<id>/ + prompt.md
-        2. await orchestrator._run_subprocess(trigger_proposer, ...)
-        3. await orchestrator._run_subprocess(trigger_critic, ...)
-        4. await orchestrator._run_subprocess(trigger_chairman, ...)
-        5. 驗證 stage3_plan.md 存在 → COUNCIL_PENDING_APPROVAL
-        """
-```
-
-**不再包含**：`build_prompt_envelope`、`query_models_parallel`、WebSocket room、jsonl transcript（**會議紀錄 = `stage*.md` 檔案**）。
-
-### 4.5 Workflow Handoff（前後段銜接）
+## 20. 最終架構
 
 ```text
-Panel 1 Start
-  → LocalCouncilRunner.run_session()
-  → state: COUNCIL_RUNNING
-  → state: COUNCIL_PENDING_APPROVAL
-Gate #1 Approve
-  → export_to_target()  # council_NNN.md = chairman plan
-  → _spawn_executor()   # 不變
-  → ... reviewer → Gate #2 → commit
+MAW UI
+  ├─ 選擇專案與角色
+  ├─ 建立 workflow
+  ├─ 顯示檔案與狀態
+  └─ 接收使用者決定
+          ↓
+      watcher.py
+  ├─ 看狀態
+  ├─ 看產物
+  ├─ 選下一個角色
+  └─ 呼叫 adapter
+          ↓
+     本機 Agent
+  ├─ 自行讀專案
+  ├─ 完成角色任務
+  └─ 寫入指定產物
 ```
 
-**關鍵**：`export_to_target` 的 `council_NNN.md` 來源改為 `council.final_plan` 的 Markdown，而非 API Stage 3 response。
+MAW 的核心不再是「AI Council Engine」，而是：
 
----
-
-## 5. 實施階段（Phased Migration）
-
-> **禁止 big-bang**：每階段可合併 main、可跑測試、可回滾。
-
-### Phase L0 — 檔案契約與 Mock trigger 腳本（1–2 週）
-
-| 項目 | 內容 |
-|------|------|
-| 新增 | `local_council.py`、`adapters/launcher.py`、`templates/council/mock_*.py.tpl` |
-| 擴充 | `install_adapters` 安裝 `trigger_proposer/critic/chairman.py` |
-| Mock | 三個 mock trigger 依序寫入 `stage*.md`（與 mock executor 同風格） |
-| 測試 | `test_local_council.py` — 驗證檔案鏈 + exit code |
-| 不刪 | 舊 council 路徑，以 `MAW_LOCAL_COUNCIL=1` feature flag 切換 |
-| **不碰** | `/ws/maw`、`ws-manager.js` |
-
-**驗收**：`MAW_LOCAL_COUNCIL=1 MAW_MOCK_MODE=1` 跑完三階段後 `stage3_plan.md` 存在。
-
-### Phase L1 — Orchestrator 切換（1 週）
-
-| 項目 | 內容 |
-|------|------|
-| 修改 | `loop_orchestrator._run_council_task` 預設走 `LocalCouncilRunner` |
-| 修改 | `approve_council` 讀取 `stage3_plan.md` |
-| 新增 | Panel 2 顯示 `stage*.md`（HTTP） |
-| 測試 | 改寫 `test_e2e_workflow.py` |
-
-**驗收**：mock local council 全鏈路到 export。
-
-### Phase L2 — 剝離 LLM 層（3–5 天）
-
-| 項目 | 內容 |
-|------|------|
-| 刪除 | §3.1 LLM 相關檔案 |
-| 刪除 | `setup_api` LLM 函式、Panel 0 LLM UI |
-| 刪除 | `test_llm_*`、`test_openrouter`、`test_direct_resolver` |
-| 驗證 | `rg` 零殘留 |
-
-### Phase L3 — 剝離 Context 層（1 週）
-
-| 項目 | 內容 |
-|------|------|
-| 刪除 | `project_context.py`、`scout.py`、`explorer.py` 及測試 |
-| 刪除 | context API 路由、UI context bar |
-| 刪除 | `export.py` context 區塊 |
-| 刪除 | `context_smoke_test.py`、Phase 6–8 文件 |
-| 修改 | `README.md` 架構說明 |
-
-**驗收**：repo 體積減 ~55%；pytest 全綠。
-
-### Phase L4 — Registry 統一與真實 Agent（持續）
-
-| 項目 | 內容 |
-|------|------|
-| 實作 | 各 GUI agent 的 council 啟動腳本（與 executor 同安裝流程） |
-| 實作 | `resource_lock` 序列模式實測 |
-| 文件 | 單一 `docs/LOCAL_AGENT_SETUP.md` |
-
-### Phase L5 — 收尾
-
-| 項目 | 內容 |
-|------|------|
-| 刪除 | `MAW_LOCAL_COUNCIL` flag（僅留一條路徑） |
-| 刪除 | `council/config.py` 內 `AVAILABLE_MODELS` |
-| 更新 | `FINAL_SPEC.md`、`README.md`、`implementation_plan.md` |
-| 歸檔 | `docs/archive/context-era/` |
-
----
-
-## 6. 測試策略（改寫後）
-
-| 類型 | 檔案 | 數量估計 |
-|------|------|----------|
-| Local council 單元 | `test_local_council.py` | ~15 |
-| Council 檔案契約 | `test_council_workflow_files.py` | ~8 |
-| Resource lock | `test_resource_lock.py` | ~5 |
-| Launcher | `test_adapters.py`（擴充） | +5 |
-| Orchestrator | `test_orchestrator.py`（精簡） | ~10 |
-| WebSocket | `test_websocket.py` | 不變（現有 4 則） |
-| E2E mock | `test_e2e_workflow.py` | 1–3 |
-| Export | `test_export.py`（精簡） | ~8 |
-| Safety / gates | `test_safety.py` | ~6 |
-
-**目標**：~60–70 測試（較現行 154 少，但覆蓋 **新架構關鍵路徑**）。質優於量。
-
----
-
-## 7. 風險與緩解
-
-| 風險 | 緩解 |
-|------|------|
-| Agent binary 路徑各機不同 | registry `binary` 可為 null，Panel 0 讓使用者填絕對路徑，寫入 `~/.agent-cowork/agents.json` |
-| 各 Agent 工具介面不同 | Council trigger 模板只約定「讀 session 檔、寫 output 檔」；內部如何叫 Grok/Codex 由模板實作 |
-| 三進程同時 GUI 搶焦點 | 預設 headless CLI 模式；GUI 僅 executor |
-| 剝離遺漏 import 導致 runtime 爆炸 | Phase L2/L3 末尾跑 `rg` + `python -m compileall` + 全測 |
-| Gate #1 審計能力消失 | 改為 **檔案審計**（`stage*.md` 全保留在 `PLANNING/`），可直接 grep |
-| 舊 conversation JSON 不相容 | 一次性 migration script 或版本欄位 `schema_version: 2` |
-
----
-
-## 8. 完成定義（Definition of Done）
-
-改造完成當且僅當：
-
-```text
-✓ rg 全 repo 無 litellm / openrouter / build_context_pack / query_model 殘留
-✓ .env.example 無任何 API 金鑰欄位
-✓ Council 僅透過本機子進程 + MAW_workflow 檔案契約完成三階段（無 Agent WebSocket）
-✓ MAW Hub 不讀取 target 原始碼檔案（僅驗證路徑存在與 MAW_workflow 契約）
-✓ Executor / Reviewer 與 Council 共用 adapters/launcher
-✓ Gate #1 / Gate #2 人工閘門仍有效
-✓ export → executor → reviewer → commit 全鏈路在 MAW_MOCK_MODE=1 通過
-✓ Phase 6–8 context 文件已歸檔或刪除
-✓ README 描述本機多進程架構
-```
-
-一句話標準：
-
-```text
-MAW 成為輕量編排器：使用者用自己信任的本機 Agent 開會與幹活，
-MAW 只負責啟動、排隊、轉發、記錄、閘門與匯出。
-```
-
----
-
-## 9. 建議首批 PR 切分
-
-```text
-PR-L0a  council trigger 模板 + install_adapters + 檔案契約 tests
-PR-L0b  local_council spawn 編排 + feature flag
-PR-L1   orchestrator 切換 + Gate #1 transcript UI
-PR-L2   刪除 LLM 層（含 setup + Panel 0）
-PR-L3   刪除 context 層（含 export + docs archive）
-PR-L4   resource_lock + serialized mode
-PR-L5   registry 統一 + 真實 agent 模板 + README
-```
-
----
-
-## 10. 與使用者大綱的對照
-
-| 使用者要點 | 本方案對應 |
-|------------|------------|
-| 外部 API 完全替換為本機多進程 | §1、§4、`local_council.py` |
-| 徹底刪除 llm_provider / direct_resolver / 金鑰 | §3.1、§3.7 |
-| 三 Agent 協作 | §2、`PLANNING/council_session_*/stage*.md`（與 Executor 同模式） |
-| adapters 統一會議與實作 Agent | §4.2、`launcher.py` |
-| export → executor 銜接不變 | §4.5 |
-| Resource Lock 防 OOM | §4.3、`MAW_INFERENCE_SLOTS` |
-| 厚重架構剝離 | §3（~55–65% 程式移除）、§5 分階段 |
-
----
-
----
-
-## 附錄：v1.1 修訂說明
-
-v1.0 誤將 Council 設計為 WebSocket「會議大廳」，與後半段已驗證的 adaptor 模式不一致。v1.1 改為：
-
-- Agent IPC = **`MAW_workflow/` 檔案**（`trigger_proposer` → `trigger_critic` → `trigger_chairman`）
-- WebSocket = **UI 日誌 only**（`_run_subprocess` stdout，零改動）
-- 刪除 `agent_protocol.py`、WS room、`council_sessions/*.jsonl`
-
-*文件作者：MAW 架構改造草案 v1.1 — 待 Kevin 審核後進入 Phase L0。*
+> 一個讓使用者自由安排本機 Agent，並以透明檔案完成規劃、實作、審查與交接的極簡工作流工具。
