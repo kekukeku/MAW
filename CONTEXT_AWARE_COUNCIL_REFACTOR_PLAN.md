@@ -1757,7 +1757,8 @@ P2: 6e Scout Auto Recommendation
 P3: 6f Explorer Brief
 P3: 6g Context Governance / Audit Hardening ✅
 P3: 6g.1 Audit Level Correctness & Consistency ✅
-P4: 7  Release Hardening / Real Workflow Validation  ← current
+P4: 7  Release Hardening / Real Workflow Validation ✅
+P5: 8  Real-Usage Observability & Reliability  ← current
 ```
 
 ### 6g.1 設計決策收斂（6g + 6g.1 polish 完成後落檔）
@@ -1785,12 +1786,27 @@ P4: 7  Release Hardening / Real Workflow Validation  ← current
 - `l0_only` emitted backend-side; `explorer_failed` translated in frontend.
 - Export fallback uses `audit_unavailable`; dead `_has_scout_auto_selected` removed.
 
-### 17.2 Phase 7 — Release Hardening
+### 17.2 Phase 7 — Release Hardening (completed)
+
+**狀態**：✅ 已完成（`c865aeb`）。
 
 See `CONTEXT_RELEASE_HARDENING_PLAN.md` and `docs/CONTEXT_GOVERNANCE.md`.
 
 - `context_smoke_test.py` validates full HTTP context governance contract.
 - `docs/CONTEXT_GOVERNANCE.md` is the operator-facing reasonCode / riskFlags reference.
+- `docs/PHASE7_UI_CHECKLIST.md` C1–C11 passed (context / Gate #1 UI).
+
+### 17.3 Phase 8 — Real-Usage Observability & Reliability
+
+See `CONTEXT_RELIABILITY_PLAN.md`.
+
+**定位**：真實使用觀測與可靠性 — **不擴功能**。
+
+- **入口門檻**：`docs/PHASE8_UI_CHECKLIST.md` U1–U10（全 Panel 人工回歸，真實專案）。
+- **8B**：真實專案 canary 驗證與品質指標。
+- **8C**：Context 成本、截斷率、Scout 命中率觀測。
+- **8D**：失敗恢復與歷史會議重播。
+- **8E**：Gate #1 審計資料可搜尋性。
 
 ---
 
