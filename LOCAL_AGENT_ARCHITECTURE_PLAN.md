@@ -29,6 +29,33 @@ MAW 已經具備足夠的基本元件：
 
 所有分析、讀檔、提案、實作與審查，都由使用者本機已開啟或可被 adapter 喚醒的 Agent 完成。
 
+### 0.1 正式開發策略：同 Repo 重寫 v2
+
+本次不在現有約兩萬行的 v1 架構內逐層改造。舊系統的核心假設、資料格式、UI 與測試大多服務於即將退役的 API Council；直接修改會讓大量時間花在維持暫時相容與清理交錯依賴。
+
+正式策略是：
+
+> 保留 MAW 的 GitHub repository、名稱與 Git 歷史，在新的 `codex/file-workflow-v2` 分支建立獨立 v2 核心；待真實 Agent 全流程驗證完成後，以 v2 取代 v1，最後整批刪除舊實作。
+
+採用同 Repo 而非另開新專案，因為：
+
+- MAW 的產品目的與名稱沒有改變。
+- 現有提交歷史與設計文件仍有追溯價值。
+- Git 已足以保存舊版，不需要在正式程式樹長期保留 `legacy/`。
+- 可以在獨立分支自由重寫，不讓半成品污染 `main`。
+- 完成後仍是一個乾淨、唯一的 MAW，而不是 MAW 與 MAW2 並存。
+
+### 0.2 重寫原則
+
+- 新核心使用全新目錄、資料 schema、測試與入口。
+- 不讓 v2 import v1 的 Council、Context、Export 或 Orchestrator 模組。
+- 不為了維持舊 conversation／Stage schema 而扭曲新設計。
+- 舊版在 v2 達到切換條件前保持可運作，但不再新增功能。
+- 只摘取已驗證且與新架構相符的少數能力。
+- 摘取時以重新實作或窄幅搬移為原則，不複製整個舊模組。
+- v2 未通過真實 Agent E2E 前，不刪除 v1。
+- v2 通過切換 Gate 後，舊程式一次性整批移除，不留下雙軌架構。
+
 ---
 
 ## 1. North Star
@@ -739,47 +766,66 @@ UI 需要提供：
 
 ---
 
-## 12. 保留、重寫與刪除
+## 12. 重寫邊界與可摘取資產
+
+本次採取「看懂後重新實作」，而不是把舊模組搬進 v2 再慢慢刪除。
 
 ### 12.1 保留並精簡
 
-| 現有部分 | 處理 |
+| 現有部分 | v2 處理 |
 |---|---|
-| `adapters/` | 保留，擴充為所有角色共用 |
-| `maw_paths.py` | 保留 |
-| 目標專案 scaffold | 保留，改成新檔案結構 |
-| FastAPI + UI | 保留為控制台 |
-| `/ws/maw` | 僅保留 UI 狀態通知 |
-| subprocess log streaming | 可保留給 adapter 診斷 |
-| target validation | 保留並改驗證新契約 |
-| Git 安全檢查 | 保留 |
+| `adapters/` | 摘取 registry、template 與 custom command 概念，重新實作為角色通用能力 |
+| `maw_paths.py` | 摘取路徑正規化與 project／workflow root 概念 |
+| `targets.json` | 保留多專案設定概念，升級 schema |
+| 目標專案 scaffold | 依 v2 契約重建 |
+| FastAPI | 可繼續作為本機 UI server |
+| `/ws/maw` | 只保留 UI 狀態通知 |
+| subprocess 管理 | 摘取 timeout、process group termination 與 stdout 診斷 |
+| target validation | 依 v2 契約重新實作 |
+| Git 安全檢查 | 摘取 branch、diff、commit 前檢查 |
+| macOS folder picker | 可窄幅搬移 |
+| mock target／E2E 方法 | 依 v2 schema 重建 fixture |
 
-### 12.2 重寫
+### 12.2 不直接改造的舊核心
 
-| 檔案 | 新責任 |
+下列檔案不作「瘦身後沿用」，而是在 v2 完成後由新模組完全取代：
+
+| 舊檔案 | 原因 |
 |---|---|
-| `loop_orchestrator.py` | 瘦身為工作流 API 與 watcher 控制，不再直接執行 Council／Executor／Reviewer 邏輯 |
-| `export.py` | 改為建立 workflow 目錄與檔案，不再匯出 Karpathy conversation |
-| `setup_api.py` | 改為專案、Agent、adapter、watcher preflight |
-| `static/index.html` | 改為 roster、artifact 與 user gate UI |
-| `adapters/installer.py` | 安裝／更新 watcher 與角色 adapter |
-| `adapters/registry.json` | 能力式 registry |
-| `template_target_project/` | 改為完整極簡工作流模板 |
+| `loop_orchestrator.py` | 內含大量 v1 Council、Context、Executor、Reviewer 與恢復假設 |
+| `export.py` | 綁定 conversation、Stage 1／2／3 與 context audit |
+| `setup_api.py` | 綁定 LLM provider、API keys 與舊 adapter 安裝流程 |
+| `static/index.html` | 大量 UI 綁定模型、context、Scout、Explorer 與舊 Stage |
+| `council/` | 整個目錄屬於 API Council 時代 |
+| `project_context.py` | 與新架構方向相反 |
+| `scout.py`、`explorer.py` | Agent 自行讀取專案後不再需要 |
 
-### 12.3 新增
+### 12.3 遷移期 v2 結構
 
-建議最小新增：
+新實作先放在獨立目錄，避免與 v1 import graph 混合：
 
 ```text
-watcher.py
-workflow_state.py
-workflow_files.py
-adapters/dispatcher.py
-templates/AGENTS.md
-templates/TEAM_RULES.md
+MAW/
+├── v2/
+│   ├── app.py
+│   ├── workflow.py
+│   ├── watcher.py
+│   ├── files.py
+│   ├── dispatcher.py
+│   ├── git_ops.py
+│   ├── adapters/
+│   └── ui/
+├── v2_templates/
+│   ├── AGENTS.md
+│   ├── TEAM_RULES.md
+│   └── MAW_workflow/
+├── v2_tests/
+└── v2_smoke_test.py
 ```
 
-若可保持清楚，也可將 `workflow_state.py` 與 `workflow_files.py` 合併；不要為了分層而分層。
+切換完成後刪除 v1，將 v2 提升為正式根目錄結構並移除 `v2` 前綴。正式 release 不留下兩套入口或 `legacy/` 目錄。
+
+若實作初期更適合 CLI，先以 CLI 驗證完整流程；UI 排在工作流與真實 Agent E2E 之後。
 
 ### 12.4 徹底刪除
 
@@ -919,9 +965,23 @@ MAW_PORT=8002
 
 ## 15. 實施階段
 
-### Phase 0：固定新契約
+### Phase 0：建立重寫分支與隔離邊界
 
-先只建立規格與 mock，不刪舊架構。
+- 從同步的 `main` 建立 `codex/file-workflow-v2`。
+- v1 進入功能凍結，只接受必要修復。
+- 建立 `v2/`、`v2_tests/`、`v2_templates/`。
+- 建立 v2 獨立 CLI／測試入口。
+- v2 測試不得 import v1 Council、Context、Export 或 Orchestrator。
+
+驗收：
+
+- v1 在 `main` 仍可運作。
+- v2 可獨立啟動最小入口。
+- v2 import graph 與 v1 核心隔離。
+
+### Phase 1：固定新契約
+
+先建立 schema、純狀態邏輯與 mock，不接 UI。
 
 - 定義 manifest、狀態、產物命名與 decision token。
 - 定義 Planner 1–4 與評論矩陣。
@@ -934,7 +994,7 @@ MAW_PORT=8002
 - 單元測試可從任意 Planner 數量算出正確工作項目。
 - 所有狀態轉移都有合法前置條件。
 
-### Phase 1：Watcher 驅動的規劃會議
+### Phase 2：CLI 跑通規劃會議
 
 - 建立新 watcher。
 - 跑通 Chair clarify。
@@ -950,9 +1010,9 @@ MAW_PORT=8002
 - mock Agent 可只靠檔案完成 Gate #1。
 - watcher 重啟後不重複已完成工作。
 
-### Phase 2：接上既有 Executor／Reviewer
+### Phase 3：CLI 跑通完整後半段
 
-- 將 Executor／Reviewer 也改由同一 watcher 與 dispatcher 觸發。
+- 以新 dispatcher 觸發 Executor／Reviewer。
 - 產出版本化 walkthrough 與 review。
 - 支援 REQUEST_CHANGES 循環。
 - Reviewer APPROVE 後由 Executor commit。
@@ -961,9 +1021,10 @@ MAW_PORT=8002
 驗收：
 
 - 前後段使用同一套 roster、dispatch、state 與 artifact 原則。
-- 不再由 `loop_orchestrator.py` 分別硬編碼 Executor 與 Reviewer 啟動命令。
+- v2 不依賴 `loop_orchestrator.py`。
+- 全 mock CLI 可完成到 commit 與 Chair final check。
 
-### Phase 3：真實 Agent 驗證
+### Phase 4：接入真實 Agent
 
 至少驗證：
 
@@ -977,50 +1038,62 @@ MAW_PORT=8002
 
 至少一條真實完整流程必須完成到 commit，才可刪除舊架構。
 
-### Phase 4：切換 UI 與正式入口
+### Phase 5：重新建立 UI
 
+- UI 直接建立與操作 v2 workflow。
 - 新 roster UI 成為唯一入口。
 - 新 workflow artifact UI 取代 Council Stage UI。
-- 移除模型、context、Scout、Explorer UI。
 - `/ws/maw` 只推送 watcher 狀態與產物更新。
-- 新流程成為預設。
+- 不移植舊 UI 的模型、context、Scout、Explorer 區塊。
 
-### Phase 5：徹底剝離舊架構
+驗收：
 
+- 不開 CLI 也能完成完整 v2 工作流。
+- UI 不依賴任何 v1 API。
+
+### Phase 6：切換 Gate
+
+必須全部成立：
+
+- v2 全 mock E2E 通過。
+- v2 真實 Agent E2E 完成到 commit。
+- clarification、plan approval、REQUEST_CHANGES、restart recovery 全部通過。
+- 安裝、preflight 與新專案 scaffold 通過。
+- 使用者確認 v2 可取代 v1。
+
+### Phase 7：一次性取代 v1
+
+- 將 v2 提升為正式根目錄入口。
 - 刪除 §12.4 所列檔案。
 - 移除所有 import、route、env、setup state、UI、測試與文件殘留。
 - 移除 conversation export。
 - 移除 context audit 與 auto-approve context policy。
 - 移除 chairman API final summary。
 - 更新依賴與 lock file。
-
-此階段完成後，不保留舊 API Council feature flag。
-
-### Phase 6：收尾與發布
-
 - 重寫 README、Final Spec 與安裝說明。
 - 提供升級／清理指南。
 - 完成全測與真實 E2E。
 - 驗證 loopback-only。
 - 驗證 repo 無 API Council 活躍程式碼。
-- 建立乾淨 release commit。
+- 不保留 legacy 目錄、舊入口或長期 feature flag。
+- 建立乾淨 release commit 並合併回 `main`。
 
 ---
 
 ## 16. 建議 Commit／PR 切分
 
 ```text
-01 workflow schema + templates + state tests
-02 watcher planning phases + mock adapters
-03 planner matrix + peer comments + chair synthesis
-04 user clarification + plan approval gates
-05 unified dispatcher for executor/reviewer
-06 walkthrough-review-revision-commit loop
+01 create isolated v2 skeleton and test boundary
+02 workflow schema + templates + state tests
+03 watcher planning phases + mock adapters
+04 planner matrix + peer comments + chair synthesis
+05 user clarification + plan approval gates
+06 executor-reviewer-revision-commit loop
 07 real agent adapters + preflight
-08 roster/artifact UI
-09 remove API council and provider layer
-10 remove context/scout/explorer layer
-11 docs, migration cleanup, dependency cleanup
+08 new roster/artifact UI
+09 v2 replacement readiness audit
+10 replace v1 and remove API council/context stack
+11 migration cleanup, docs, dependency cleanup
 ```
 
 每一批都必須：
@@ -1143,6 +1216,8 @@ uv run pytest -q
 ✓ 所有重要歷程皆保留為人類可讀檔案
 ✓ 前半段會議與後半段實作使用同一套工作流原則
 ✓ API Council、Provider、Context、Scout、Explorer 程式與 UI 已徹底移除
+✓ v2 核心未依賴 v1 Council、Context、Export 或 Orchestrator
+✓ 正式版本沒有 legacy 目錄、雙入口或長期 feature flag
 ✓ README、規格、安裝流程只描述新架構
 ✓ 至少一條真實 Agent 流程完成到 commit
 ```
