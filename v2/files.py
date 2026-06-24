@@ -254,10 +254,16 @@ def persist_dispatch(wf_dir: Path, runtime_state: dict, key: str, record: dict) 
     save_runtime_state(wf_dir, runtime_state)
 
 
-def reconcile_runtime_state(wf_dir: Path, runtime_state: dict) -> None:
-    """After restart: mark completed dispatches where artifact exists, mark stale in-flights."""
+def reconcile_runtime_state(wf_dir: Path, runtime_state: dict, *, agent_timeout: int = 600) -> None:
+    """After restart: mark completed dispatches where artifact exists.
+
+    Dispatched items that have not timed out are left as 'dispatched' so
+    _check_completions can continue polling them. Only items whose
+    started_at + agent_timeout has passed are marked stale.
+    """
     changed = False
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     for key, rec in list(runtime_state.get("dispatches", {}).items()):
         status = rec.get("status", "")
         expected = rec.get("expected_output", "")
@@ -265,12 +271,23 @@ def reconcile_runtime_state(wf_dir: Path, runtime_state: dict) -> None:
             artifact = wf_dir / expected
             if exists_nonempty(artifact):
                 rec["status"] = RUNTIME_STATUS_COMPLETED
-                rec["updated_at"] = now
+                rec["updated_at"] = now_iso
                 changed = True
             else:
-                rec["status"] = RUNTIME_STATUS_STALE
-                rec["updated_at"] = now
-                changed = True
+                started = rec.get("started_at", "")
+                if started:
+                    try:
+                        started_dt = datetime.fromisoformat(started)
+                        elapsed = (now - started_dt).total_seconds()
+                    except (ValueError, TypeError):
+                        elapsed = 0
+                else:
+                    elapsed = 0
+                if elapsed > agent_timeout:
+                    rec["status"] = RUNTIME_STATUS_STALE
+                    rec["updated_at"] = now_iso
+                    changed = True
+                # Otherwise leave as dispatched — still in-flight
     if changed:
         save_runtime_state(wf_dir, runtime_state)
 
@@ -286,9 +303,29 @@ def _executor_lock_path(target_path: str) -> Path:
     return target_workflow_root(target_path) / EXECUTOR_LOCK_FILE
 
 
-def acquire_executor_lock(target_path: str, workflow_id: str, dispatch_key: str) -> bool:
+def acquire_executor_lock(target_path: str, workflow_id: str, dispatch_key: str, *, lock_timeout: int = 600) -> bool:
     path = _executor_lock_path(target_path)
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+
+    existing = check_executor_lock(target_path)
+    if existing:
+        # Same workflow can re-acquire (update dispatch_key)
+        if existing.get("workflow_id") == workflow_id:
+            pass  # allow overwrite
+        else:
+            started = existing.get("started_at", "")
+            if started:
+                try:
+                    started_dt = datetime.fromisoformat(started)
+                    elapsed = (now_dt - started_dt).total_seconds()
+                    if elapsed > lock_timeout:
+                        pass  # stale lock from another workflow — overwrite
+                    else:
+                        return False  # Active lock held by another workflow
+                except (ValueError, TypeError):
+                    pass  # unparseable — overwrite stale
+
     lock_data = {
         "workflow_id": workflow_id,
         "dispatch_key": dispatch_key,

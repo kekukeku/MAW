@@ -294,25 +294,37 @@ class Watcher:
         return True
 
     def _handle_result(self, wf_dir: Path, manifest: dict, item: DispatchItem, result: DispatchResult) -> None:
-        self._agent_locks[item.agent] = False
-        if item.role == "executor":
-            release_executor_lock(self.target_path)
+        is_async_success = result.success and getattr(result, "is_async", False)
+
+        if not is_async_success:
+            self._agent_locks[item.agent] = False
+            if item.role == "executor":
+                release_executor_lock(self.target_path)
         now = _now()
 
         if result.success:
             record = get_dispatch_record(self._runtime_state, item.key)
             if record:
-                record["status"] = RUNTIME_STATUS_COMPLETED
+                if is_async_success:
+                    record["status"] = RUNTIME_STATUS_DISPATCHED
+                else:
+                    record["status"] = RUNTIME_STATUS_COMPLETED
                 record["updated_at"] = now
+                if hasattr(result, "invocation_id") and result.invocation_id:
+                    record["invocation_id"] = result.invocation_id
                 persist_dispatch(wf_dir, self._runtime_state, item.key, record)
-            self._failure_counts.pop(item.key, None)
-            append_event(wf_dir, {
-                "ts": now,
-                "type": "agent.completed",
-                "key": item.key,
-                "agent": item.agent,
-            })
-            logger.info("Completed %s", item.key)
+            
+            if is_async_success:
+                logger.info("Dispatched async work %s (invocation_id: %s)", item.key, result.invocation_id)
+            else:
+                self._failure_counts.pop(item.key, None)
+                append_event(wf_dir, {
+                    "ts": now,
+                    "type": "agent.completed",
+                    "key": item.key,
+                    "agent": item.agent,
+                })
+                logger.info("Completed %s", item.key)
         else:
             self._failure_counts[item.key] = self._failure_counts.get(item.key, 0) + 1
             attempt = self._failure_counts[item.key]
@@ -322,6 +334,8 @@ class Watcher:
                 record["attempt"] = attempt
                 record["last_error"] = result.error or "unknown"
                 record["updated_at"] = now
+                if hasattr(result, "invocation_id") and result.invocation_id:
+                    record["invocation_id"] = result.invocation_id
                 persist_dispatch(wf_dir, self._runtime_state, item.key, record)
             append_event(wf_dir, {
                 "ts": now,
@@ -336,7 +350,8 @@ class Watcher:
             if self._failure_counts[item.key] >= self.max_retries:
                 mark_failed(wf_dir, manifest, f"Agent {item.agent} failed {item.key} after {self.max_retries} retries: {result.error}")
 
-        self._active_dispatches.pop(item.key, None)
+        if not is_async_success:
+            self._active_dispatches.pop(item.key, None)
 
     def _check_completions(self, wf_dir: Path, manifest: dict) -> bool:
         """Check all active dispatches for artifact completion (async/manual mode)."""
@@ -347,8 +362,17 @@ class Watcher:
         for key, info in list(self._active_dispatches.items()):
             item = info["item"]
             expected_output = self._expected_output_for(item, wf_dir)
-            if expected_output and exists_nonempty(wf_dir / expected_output):
-                to_complete.append((key, item))
+            if expected_output:
+                expected_path = wf_dir / expected_output
+                if exists_nonempty(expected_path):
+                    # Clean up invocation file if exists
+                    invocation_file = expected_path.with_suffix(expected_path.suffix + ".invocation")
+                    if invocation_file.is_file():
+                        try:
+                            invocation_file.unlink()
+                        except Exception:
+                            pass
+                    to_complete.append((key, item))
 
         for key, item in to_complete:
             self._agent_locks[item.agent] = False
@@ -369,6 +393,7 @@ class Watcher:
             })
             logger.info("Async-completed %s (artifact detected)", key)
             changed = True
+
 
         # Also check stale dispatches for timeout
         to_stale = []
@@ -460,9 +485,9 @@ class Watcher:
                      manifest["roster"]["executor"],
                      manifest["roster"]["reviewer"])
 
-        # Load and reconcile runtime state
+        # Load and reconcile runtime state with timeout grace
         self._runtime_state = load_runtime_state(wf_dir)
-        reconcile_runtime_state(wf_dir, self._runtime_state)
+        reconcile_runtime_state(wf_dir, self._runtime_state, agent_timeout=self.agent_timeout)
 
         # Recover failure counts from runtime_state
         for key, rec in self._runtime_state.get("dispatches", {}).items():
@@ -470,6 +495,23 @@ class Watcher:
             status = rec.get("status", "")
             if status in (RUNTIME_STATUS_FAILED, RUNTIME_STATUS_STALE):
                 self._failure_counts[key] = att
+
+        # Rebuild active dispatches from runtime_state for items still in-flight
+        for key, rec in self._runtime_state.get("dispatches", {}).items():
+            if rec.get("status") == RUNTIME_STATUS_DISPATCHED:
+                item = DispatchItem(
+                    key=key,
+                    role=rec.get("role", ""),
+                    seat=rec.get("seat", ""),
+                    agent=rec.get("agent", ""),
+                    phase=key.split(":")[1] if len(key.split(":")) >= 2 else "",
+                    iteration=rec.get("iteration", 1),
+                )
+                self._active_dispatches[key] = {
+                    "item": item,
+                    "started_at": rec.get("started_at", ""),
+                    "timeout_at": rec.get("started_at", ""),
+                }
 
     def _handle_signal(self, signum, frame):
         logger.info("Received signal %s, stopping...", signum)

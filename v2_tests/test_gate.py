@@ -13,6 +13,9 @@ from v2.files import (
     exists_nonempty,
     write_atomic,
     ARTIFACT_CHAIR_BRIEF,
+    acquire_executor_lock,
+    release_executor_lock,
+    check_executor_lock,
 )
 from v2.schema import (
     build_roster,
@@ -170,6 +173,75 @@ class TestInspectNoSideEffects(unittest.TestCase):
                 after[str(f)] = (st.st_mtime, st.st_size, f.read_bytes())
 
         self.assertEqual(before, after, "Inspect modified files!")
+
+
+class TestExecutorLock(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.target = self.tmpdir
+        scaffold_target(self.target)
+
+    def tearDown(self):
+        release_executor_lock(self.target)
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_acquire_and_release_lock(self):
+        ok = acquire_executor_lock(self.target, "wf_a", "wf_a:exec:executor:1")
+        self.assertTrue(ok)
+        lock = check_executor_lock(self.target)
+        self.assertIsNotNone(lock)
+        self.assertEqual(lock["workflow_id"], "wf_a")
+
+        ok = release_executor_lock(self.target)
+        self.assertTrue(ok)
+        self.assertIsNone(check_executor_lock(self.target))
+
+    def test_active_lock_blocks_other_workflow(self):
+        ok = acquire_executor_lock(self.target, "wf_a", "wf_a:exec:executor:1")
+        self.assertTrue(ok)
+        # Another workflow tries to acquire — should fail
+        ok2 = acquire_executor_lock(self.target, "wf_b", "wf_b:exec:executor:1", lock_timeout=600)
+        self.assertFalse(ok2)
+        # But same workflow can re-acquire (overwrite)
+        ok3 = acquire_executor_lock(self.target, "wf_a", "wf_a:exec:executor:2", lock_timeout=600)
+        self.assertTrue(ok3)
+
+    def test_stale_lock_allows_acquisition(self):
+        # Acquire with a very short timeout
+        ok = acquire_executor_lock(self.target, "wf_a", "wf_a:exec:executor:1")
+        self.assertTrue(ok)
+        # Set lock_timeout=0 so any existing lock is considered stale
+        ok2 = acquire_executor_lock(self.target, "wf_b", "wf_b:exec:executor:1", lock_timeout=0)
+        self.assertTrue(ok2)
+        lock = check_executor_lock(self.target)
+        self.assertEqual(lock["workflow_id"], "wf_b")
+
+
+class TestScaffoldTemplates(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.target = self.tmpdir
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_scaffold_copies_templates_to_new_target(self):
+        scaffold_target(self.target)
+        agents = Path(self.target) / "AGENTS.md"
+        rules = Path(self.target) / "TEAM_RULES.md"
+        self.assertTrue(agents.is_file(), "AGENTS.md should be copied")
+        self.assertTrue(rules.is_file(), "TEAM_RULES.md should be copied")
+
+    def test_scaffold_does_not_overwrite_existing_templates(self):
+        agents = Path(self.target) / "AGENTS.md"
+        agents.write_text("Custom content", encoding="utf-8")
+        scaffold_target(self.target)
+        self.assertEqual(agents.read_text(), "Custom content",
+                         "Existing AGENTS.md must not be overwritten")
 
 
 if __name__ == "__main__":

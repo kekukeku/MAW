@@ -101,6 +101,10 @@ def compute_dispatch(wf_dir: Path, manifest: dict) -> list[DispatchItem]:
     seats = planner_seats(roster)
     n_planners = len(seats)
     max_reviews = manifest.get("max_review_iterations", 3)
+    # review_iteration: count of completed reviews.
+    # The NEXT walkthrough/review use review_iteration + 1.
+    # e.g. review_iteration=0 -> walkthrough_001, review_001
+    #      review_iteration=1 -> walkthrough_002, review_002
     review_iter = manifest.get("review_iteration", 0)
     dispatch_list: list[DispatchItem] = []
 
