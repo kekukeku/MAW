@@ -1,7 +1,7 @@
 # Phase 7: Release Hardening / Real Workflow Validation
 
 > **Version**: 1.0
-> **Status**: Automated implementation complete (`e18e54a`); Phase 7C manual UI closure pending
+> **Status**: Complete (`e18e54a`, Gate #1 polish `1fe8d3e`, Phase 7C manual UI checklist passed)
 > **Prerequisite**: Phase 6a–6g.1 landed and accepted (`c5c1e00` on `origin/main`, **154 tests pass**).
 > **North Star**: Validate that context-aware council is **stable, auditable, and replayable** on real usage paths. **Release hardening, not feature expansion.**
 > **Acceptance baseline**: Existing **154 pytest tests** stay green and the independent
