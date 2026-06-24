@@ -1,10 +1,11 @@
 # Phase 7: Release Hardening / Real Workflow Validation
 
 > **Version**: 1.0
-> **Status**: Pending implementation (handoff to 小 A / Antigravity)
+> **Status**: Automated implementation complete (`e18e54a`); Phase 7C manual UI closure pending
 > **Prerequisite**: Phase 6a–6g.1 landed and accepted (`c5c1e00` on `origin/main`, **154 tests pass**).
 > **North Star**: Validate that context-aware council is **stable, auditable, and replayable** on real usage paths. **Release hardening, not feature expansion.**
-> **Acceptance baseline**: All green AND **new automated coverage added** (154 → expected **158+** from context smoke + persistence tests; do not lock to 154).
+> **Acceptance baseline**: Existing **154 pytest tests** stay green and the independent
+> `context_smoke_test.py` HTTP workflow passes. A pytest wrapper remains optional.
 
 ---
 

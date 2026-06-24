@@ -426,6 +426,40 @@
       document.getElementById('mode-workflow').classList.remove('mode-hidden');
     }
 
+    const ACTIVE_CONVERSATION_KEY = 'maw_active_gate1_conversation';
+
+    function rememberActiveConversation(conversationId) {
+      activeConversationId = conversationId;
+      try { localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId || ''); } catch (e) {}
+    }
+
+    function clearActiveConversation() {
+      activeConversationId = null;
+      try { localStorage.removeItem(ACTIVE_CONVERSATION_KEY); } catch (e) {}
+    }
+
+    async function restoreGateOneConversation() {
+      let conversationId = '';
+      try { conversationId = localStorage.getItem(ACTIVE_CONVERSATION_KEY) || ''; } catch (e) {}
+      if (!conversationId) return;
+      activeConversationId = conversationId;
+      try {
+        const res = await fetch(`${API}/api/maw/conversations/${conversationId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.workflow?.state !== 'COUNCIL_PENDING_APPROVAL') {
+          clearActiveConversation();
+          return;
+        }
+        showWorkflowMode();
+        document.getElementById('workflow-state').textContent = 'COUNCIL_PENDING_APPROVAL';
+        document.getElementById('create-status').textContent = '會議完成 — 請於圓桌決議審查結果';
+        await loadCouncilResults(data);
+      } catch (e) {
+        clearActiveConversation();
+      }
+    }
+
     function onProviderChange() {
       const p = document.getElementById('llm-provider').value;
       document.getElementById('section-litellm').classList.toggle('mode-hidden', p !== 'litellm');
@@ -666,6 +700,7 @@
       renderAutoCommitBadge();
       updateCostHint();
       await updateLaunchButton();
+      await restoreGateOneConversation();
     }
 
     function renderAutoCommitBadge() {
@@ -768,6 +803,7 @@
       if (!prompt) return alert('請填寫任務需求');
       const models = selectedModels();
       if (!models.length) return alert('請至少勾選一個可用的會議模型成員');
+      clearActiveConversation();
       document.getElementById('create-status').textContent = '圓桌會議進行中，正在收集各模型回答...';
       const ctxBar = document.getElementById('context-bar');
       if (ctxBar) { ctxBar.className = 'context-bar scanning'; ctxBar.textContent = '專案感知背景: 掃描中...'; }
@@ -822,7 +858,7 @@
           return;
         }
         if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
-          activeConversationId = wf.conversation_id;
+          rememberActiveConversation(wf.conversation_id);
           document.getElementById('create-status').textContent = '會議完成 — 請於圓桌決議審查結果';
           await loadCouncilResults();
           return;
@@ -1430,7 +1466,7 @@
         const summary = audit.auditSummary || {};
         const policy = audit.autoApprovePolicy || {};
         const risks = policy.riskFlags || summary.riskFlags || [];
-        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(formatRiskFlag(r))}">${escapeHtml(r)}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
+        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(r)}">${escapeHtml(formatRiskFlag(r))}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
         
         let riskDetailsHtml = '';
         if (risks.length > 0) {
@@ -1594,9 +1630,13 @@
       document.getElementById('context-preview-modal').classList.remove('open');
     }
 
-    async function loadCouncilResults() {
-      const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}`);
-      const data = await res.json();
+    async function loadCouncilResults(prefetchedData = null) {
+      let data = prefetchedData;
+      if (!data) {
+        const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}`);
+        if (!res.ok) throw new Error(`Failed to load conversation: HTTP ${res.status}`);
+        data = await res.json();
+      }
       const conv = data.conversation;
       const msg = conv.messages.find(m => m.stage3);
       if (!msg) return;
@@ -1612,7 +1652,7 @@
         const summary = audit.auditSummary || {};
         const policy = audit.autoApprovePolicy || {};
         const risks = policy.riskFlags || summary.riskFlags || [];
-        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(formatRiskFlag(r))}">${escapeHtml(r)}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
+        const riskStr = risks.length > 0 ? risks.map(r => `<span class="chip orange" style="background: var(--warn); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;" title="${escapeHtml(r)}">${escapeHtml(formatRiskFlag(r))}</span>`).join('') : '<span style="color: var(--ok)">無明顯風險 (None)</span>';
         const allowedStr = policy.allowed ? '<span style="color: var(--ok); font-weight: bold;">自動批准 (Allowed)</span>' : `<span style="color: var(--err); font-weight: bold;">手動審查 (Blocked: ${escapeHtml(formatReasonCode(policy.reasonCode))})</span>`;
         
         html += `
@@ -1656,6 +1696,7 @@
     async function approveCouncil() {
       const res = await fetch(`${API}/api/maw/conversations/${activeConversationId}/approve`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
       const wf = await res.json();
+      clearActiveConversation();
       activeTaskNum = wf.task_num;
       lastLogCount = 0;
       document.getElementById('terminal').textContent = '';
@@ -1667,6 +1708,7 @@
 
     async function rejectCouncil() {
       await fetch(`${API}/api/maw/conversations/${activeConversationId}/reject`, { method: 'POST' });
+      clearActiveConversation();
       document.getElementById('council-actions').style.display = 'none';
       updatePipeline({ state: 'FAILED', review_iterations: 0 });
     }
@@ -1683,7 +1725,7 @@
           if (data.workflow) {
             const wf = data.workflow;
             if (wf.state === 'COUNCIL_PENDING_APPROVAL' && wf.conversation_id) {
-              activeConversationId = wf.conversation_id;
+              rememberActiveConversation(wf.conversation_id);
               document.getElementById('create-status').textContent = '會議完成 — 請於圓桌決議審查結果';
               loadCouncilResults();
             } else if (wf.state === 'FAILED') {
