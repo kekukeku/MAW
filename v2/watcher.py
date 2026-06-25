@@ -299,7 +299,7 @@ class Watcher:
         if not is_async_success:
             self._agent_locks[item.agent] = False
             if item.role == "executor":
-                release_executor_lock(self.target_path)
+                release_executor_lock(self.target_path, self.workflow_id)
         now = _now()
 
         if result.success:
@@ -377,7 +377,7 @@ class Watcher:
         for key, item in to_complete:
             self._agent_locks[item.agent] = False
             if item.role == "executor":
-                release_executor_lock(self.target_path)
+                release_executor_lock(self.target_path, self.workflow_id)
             record = get_dispatch_record(self._runtime_state, key)
             if record:
                 record["status"] = RUNTIME_STATUS_COMPLETED
@@ -412,7 +412,7 @@ class Watcher:
         for key, item in to_stale:
             self._agent_locks[item.agent] = False
             if item.role == "executor":
-                release_executor_lock(self.target_path)
+                release_executor_lock(self.target_path, self.workflow_id)
             record = get_dispatch_record(self._runtime_state, key)
             if record:
                 record["status"] = RUNTIME_STATUS_STALE
