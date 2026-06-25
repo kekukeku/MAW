@@ -3,7 +3,9 @@
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from v2.files import (
@@ -217,6 +219,63 @@ class TestExecutorLock(unittest.TestCase):
         self.assertTrue(ok2)
         lock = check_executor_lock(self.target)
         self.assertEqual(lock["workflow_id"], "wf_b")
+
+    def test_release_allows_other_workflow(self):
+        ok = acquire_executor_lock(self.target, "wf_a", "wf_a:exec:executor:1")
+        self.assertTrue(ok)
+        ok = release_executor_lock(self.target)
+        self.assertTrue(ok)
+        ok2 = acquire_executor_lock(self.target, "wf_b", "wf_b:exec:executor:1")
+        self.assertTrue(ok2)
+
+    def test_concurrent_race_exactly_one_wins(self):
+        """Two workflows racing for the lock — exactly one must succeed."""
+        results: list[bool] = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def competitor(workflow_id: str) -> None:
+            barrier.wait()  # synchronize start
+            ok = acquire_executor_lock(self.target, workflow_id, f"{workflow_id}:exec")
+            results.append(ok)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(competitor, "wf_alpha")
+            f2 = pool.submit(competitor, "wf_beta")
+            f1.result(timeout=10)
+            f2.result(timeout=10)
+
+        # Exactly one winner
+        self.assertEqual(len(results), 2)
+        winners = sum(1 for r in results if r)
+        self.assertEqual(winners, 1, f"Expected 1 winner, got {winners}: {results}")
+
+        # Verify lock content
+        lock = check_executor_lock(self.target)
+        self.assertIsNotNone(lock)
+        self.assertIn(lock["workflow_id"], ("wf_alpha", "wf_beta"))
+        # JSON must be parseable (check_executor_lock already verified)
+
+    def test_race_repeated_is_stable(self):
+        """Repeat the race 5 times — must always have exactly 1 winner."""
+        for attempt in range(5):
+            release_executor_lock(self.target)
+            results: list[bool] = []
+            barrier = threading.Barrier(2, timeout=5)
+
+            def competitor(wf: str) -> None:
+                barrier.wait()
+                ok = acquire_executor_lock(self.target, wf, f"{wf}:exec")
+                results.append(ok)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(competitor, "wf_one")
+                f2 = pool.submit(competitor, "wf_two")
+                f1.result(timeout=10)
+                f2.result(timeout=10)
+
+            winners = sum(1 for r in results if r)
+            self.assertEqual(winners, 1,
+                            f"Round {attempt}: expected 1 winner, got {results}")
 
 
 class TestScaffoldTemplates(unittest.TestCase):

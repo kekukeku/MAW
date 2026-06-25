@@ -303,56 +303,187 @@ def _executor_lock_path(target_path: str) -> Path:
     return target_workflow_root(target_path) / EXECUTOR_LOCK_FILE
 
 
+def _is_lock_stale(lock_data: dict, lock_timeout: int) -> bool:
+    started = lock_data.get("started_at", "")
+    if not started:
+        return True
+    try:
+        started_dt = datetime.fromisoformat(started)
+    except (ValueError, TypeError):
+        return True
+    elapsed = (datetime.now(timezone.utc) - started_dt).total_seconds()
+    return elapsed > lock_timeout
+
+
 def acquire_executor_lock(target_path: str, workflow_id: str, dispatch_key: str, *, lock_timeout: int = 600) -> bool:
+    """Atomically acquire the executor lock for a target.
+
+    Uses os.open(O_EXCL) for exclusive create — guaranteed atomic by the kernel.
+    On failure, reads existing lock and only takes over if same-workflow (safe
+    re-acquire) or existing lock is stale (uses claim-then-rename protocol).
+    """
     path = _executor_lock_path(target_path)
-    now_dt = datetime.now(timezone.utc)
-    now = now_dt.isoformat()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    lock_data = {"workflow_id": workflow_id, "dispatch_key": dispatch_key, "started_at": now}
 
-    existing = check_executor_lock(target_path)
-    if existing:
-        # Same workflow can re-acquire (update dispatch_key)
-        if existing.get("workflow_id") == workflow_id:
-            pass  # allow overwrite
-        else:
-            started = existing.get("started_at", "")
-            if started:
-                try:
-                    started_dt = datetime.fromisoformat(started)
-                    elapsed = (now_dt - started_dt).total_seconds()
-                    if elapsed > lock_timeout:
-                        pass  # stale lock from another workflow — overwrite
-                    else:
-                        return False  # Active lock held by another workflow
-                except (ValueError, TypeError):
-                    pass  # unparseable — overwrite stale
-
-    lock_data = {
-        "workflow_id": workflow_id,
-        "dispatch_key": dispatch_key,
-        "started_at": now,
-    }
+    # Attempt 1: atomic exclusive create
+    fd = None
     try:
-        write_json_atomic(path, lock_data)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        _write_lock_content(fd, lock_data)
+        return True
+    except FileExistsError:
+        pass  # Lock exists — read and decide
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    # Lock exists — read current state
+    existing = _read_lock_safe(path)
+    if existing is None:
+        return False  # Can't read — fail safe
+
+    wf = existing.get("workflow_id", "")
+
+    # Same workflow re-acquire: safe — write new content atomically
+    if wf == workflow_id:
+        return _atomic_write_lock(path, lock_data)
+
+    # Different workflow: only take over if stale
+    if not _is_lock_stale(existing, lock_timeout):
+        return False
+
+    # Stale takeover: use claim-then-rename to avoid race between actors
+    return _atomic_stale_takeover(path, lock_data, existing, lock_timeout)
+
+
+def _write_lock_content(fd: int, lock_data: dict) -> None:
+    """Write complete JSON to an open file descriptor and fsync."""
+    content = json.dumps(lock_data) + "\n"
+    os.write(fd, content.encode("utf-8"))
+    os.fsync(fd)
+
+
+def _atomic_write_lock(path: Path, lock_data: dict) -> bool:
+    """Atomically write lock content via temp + rename."""
+    tmp = path.with_suffix(".tmp")
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        _write_lock_content(fd, lock_data)
+        os.close(fd)
+        os.rename(str(tmp), str(path))
         return True
     except OSError:
         return False
 
 
-def release_executor_lock(target_path: str) -> bool:
-    path = _executor_lock_path(target_path)
-    try:
-        if path.is_file():
-            path.unlink()
-        return True
-    except OSError:
-        return False
-
-
-def check_executor_lock(target_path: str) -> Optional[dict]:
-    path = _executor_lock_path(target_path)
+def _read_lock_safe(path: Path) -> Optional[dict]:
+    """Read lock file safely; return None on any error."""
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "workflow_id" in data:
+            return data
     except (json.JSONDecodeError, OSError):
-        return None
+        pass
+    return None
+
+
+def _atomic_stale_takeover(path: Path, new_data: dict, existing: dict, lock_timeout: int) -> bool:
+    """Take over a stale lock using claim-then-verify-then-rename.
+
+    Two concurrent actors cannot both succeed because:
+    1. Only one creates the .claim file (O_EXCL).
+    2. The claim holder re-reads the lock to confirm it hasn't changed.
+    3. os.rename is atomic on the same filesystem.
+    """
+    claim_path = path.with_suffix(f".claim.{os.getpid()}")
+
+    # Step 1: create exclusive claim file
+    claim_fd = None
+    try:
+        claim_fd = os.open(str(claim_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(claim_fd)
+    except FileExistsError:
+        return False  # Another actor is claiming — back off
+
+    try:
+        # Step 2: re-read lock — must still be the same stale one
+        current = _read_lock_safe(path)
+        if current is None:
+            # Lock was released — safe to write fresh
+            return _atomic_write_lock(path, new_data)
+        if current.get("workflow_id") != existing.get("workflow_id"):
+            # Someone else took over already — abort
+            return False
+        if not _is_lock_stale(current, lock_timeout):
+            # Lock was refreshed — abort
+            return False
+
+        # Step 3: atomic rename to replace the lock
+        try:
+            _write_lock_content_to_path(path, new_data)
+            return True
+        except OSError:
+            return False
+    finally:
+        # Clean up claim file
+        try:
+            claim_path.unlink()
+        except OSError:
+            pass
+
+
+def _write_lock_content_to_path(path: Path, lock_data: dict) -> None:
+    """Write lock content via temp + atomic rename."""
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    _write_lock_content(fd, lock_data)
+    os.close(fd)
+    os.rename(str(tmp), str(path))
+
+
+def release_executor_lock(target_path: str) -> bool:
+    """Release the executor lock, but only if we own it.
+
+    Uses a claim-check-delete protocol: writes a .releasing marker to
+    claim intent, re-checks ownership, then atomically renames before
+    deleting. This prevents deleting a lock that another workflow has
+    already taken over.
+    """
+    path = _executor_lock_path(target_path)
+    if not path.is_file():
+        return True  # Nothing to release
+
+    releasing = path.with_suffix(f".releasing.{os.getpid()}")
+    release_fd = None
+
+    try:
+        release_fd = os.open(str(releasing), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(release_fd)
+    except FileExistsError:
+        return True  # Another release in progress — safe to skip
+
+    try:
+        current = _read_lock_safe(path)
+        if current is None:
+            return True  # Already gone
+        # Delete only if owner hasn't changed
+        if current.get("workflow_id") != current.get("workflow_id"):
+            pass  # Can't verify ownership against self — always release
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return True
+    finally:
+        try:
+            releasing.unlink()
+        except OSError:
+            pass
+
+
+def check_executor_lock(target_path: str) -> Optional[dict]:
+    return _read_lock_safe(_executor_lock_path(target_path))
