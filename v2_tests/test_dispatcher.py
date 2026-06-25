@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 from v2.schema import (
     build_roster,
@@ -20,6 +21,7 @@ from v2.schema import (
 from v2.files import init_workflow, ensure_workflow_dirs, exists_nonempty
 from v2.dispatcher import (
     MockAdapter,
+    AntigravityAdapter,
     DispatchResult,
     dispatch,
     get_adapter,
@@ -191,5 +193,169 @@ class TestDispatchFunction(unittest.TestCase):
         self.assertIn("APPROVE", content)
 
 
+class TestAntigravityAdapter(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.wf_dir = Path(self.tmpdir)
+        ensure_workflow_dirs(self.wf_dir)
+        self.adapter = AntigravityAdapter()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    @patch("subprocess.run")
+    @patch("v2.dispatcher.discover_antigravity_credentials")
+    @patch("os.path.isfile")
+    def test_antigravity_invoke_success_already_exists(self, mock_isfile, mock_discover, mock_run):
+        mock_isfile.return_value = True
+        mock_discover.return_value = {
+            "address": "localhost:49421",
+            "csrf_token": "token-123",
+            "project_id": "proj-123"
+        }
+
+        expected_out = str(self.wf_dir / "proposals" / "planner_a.md")
+        Path(expected_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(expected_out).write_text("Test proposal contents", encoding="utf-8")
+
+        result = self.adapter.invoke(
+            role="planner",
+            seat="planner_a",
+            target_path=self.tmpdir,
+            instruction="Test instructions",
+            expected_output=expected_out,
+            timeout=5
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.is_async)
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    @patch("v2.dispatcher.discover_antigravity_credentials")
+    @patch("os.path.isfile")
+    def test_antigravity_invoke_success_dispatch(self, mock_isfile, mock_discover, mock_run):
+        from unittest.mock import MagicMock
+        mock_isfile.return_value = True
+        mock_discover.return_value = {
+            "address": "localhost:49421",
+            "csrf_token": "token-123",
+            "project_id": "proj-123"
+        }
+
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = '{"response": {"newConversation": {"conversationId": "conv-123"}}}'
+        mock_run.return_value = mock_res
+
+        # Write manifest.json so workflow directory search succeeds
+        (self.wf_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+        expected_out = str(self.wf_dir / "proposals" / "planner_a.md")
+        Path(expected_out).parent.mkdir(parents=True, exist_ok=True)
+        # We do NOT write expected_out
+
+        result = self.adapter.invoke(
+            role="planner",
+            seat="planner_a",
+            target_path=self.tmpdir,
+            instruction="Test instructions",
+            expected_output=expected_out,
+            timeout=5
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.is_async)
+        self.assertEqual(result.invocation_id, "conv-123")
+        mock_run.assert_called_once()
+        self.assertTrue(Path(expected_out + ".invocation").exists())
+
+    @patch("v2.dispatcher.discover_antigravity_credentials")
+    @patch("os.path.isfile")
+    def test_antigravity_invoke_manual_fallback(self, mock_isfile, mock_discover):
+        mock_isfile.return_value = False
+
+        expected_out = str(self.wf_dir / "proposals" / "planner_a.md")
+        Path(expected_out).parent.mkdir(parents=True, exist_ok=True)
+        # We do NOT write expected_out
+
+        # Write manifest.json so workflow directory search succeeds
+        (self.wf_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+        result = self.adapter.invoke(
+            role="planner",
+            seat="planner_a",
+            target_path=self.tmpdir,
+            instruction="Test instructions",
+            expected_output=expected_out,
+            timeout=5
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.is_async)
+        self.assertEqual(result.invocation_id, "manual")
+        self.assertTrue(Path(expected_out + ".invocation").exists())
+
+
+class TestAntigravityDiscovery(unittest.TestCase):
+
+    @patch("subprocess.check_output")
+    @patch.dict("os.environ", {
+        "ANTIGRAVITY_LS_ADDRESS": "localhost:9999",
+        "ANTIGRAVITY_CSRF_TOKEN": "csrf-9999",
+        "ANTIGRAVITY_PROJECT_ID": "proj-9999"
+    })
+    def test_discover_credentials_from_env(self, mock_ps):
+        from v2.dispatcher import discover_antigravity_credentials
+        res = discover_antigravity_credentials()
+        self.assertEqual(res["address"], "localhost:9999")
+        self.assertEqual(res["csrf_token"], "csrf-9999")
+        self.assertEqual(res["project_id"], "proj-9999")
+        mock_ps.assert_not_called()
+
+    @patch("subprocess.run")
+    @patch("subprocess.check_output")
+    @patch("os.path.isfile")
+    @patch.dict("os.environ", {}, clear=True)
+    def test_discover_credentials_no_new_conversation_probe(self, mock_isfile, mock_ps, mock_run):
+        from v2.dispatcher import discover_antigravity_credentials
+
+        mock_isfile.return_value = True
+
+        def ps_lsof_side_effect(args, **kwargs):
+            if "ps" in args:
+                return "kevin 1234 0.0 0.0 ... language_server --csrf_token my-csrf-token\n"
+            if "lsof" in args:
+                return "language_ 1234 kevin 6u IPv4 TCP 127.0.0.1:49421 (LISTEN)\n"
+            return ""
+        mock_ps.side_effect = ps_lsof_side_effect
+
+        # Mock agentapi get-conversation-metadata response
+        mock_res = MagicMock()
+        mock_res.returncode = 1
+        mock_res.stdout = '{"error": "rpc error: code = Unknown desc = trajectory not found: 00000000-0000-0000-0000-000000000000"}'
+        mock_run.return_value = mock_res
+
+        res = discover_antigravity_credentials()
+        self.assertEqual(res["address"], "localhost:49421")
+        self.assertEqual(res["csrf_token"], "my-csrf-token")
+
+        # Verify that new-conversation was NOT called
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            self.assertNotIn("new-conversation", cmd)
+            self.assertIn("get-conversation-metadata", cmd)
+
+
 if __name__ == "__main__":
+    from unittest.mock import patch
+    unittest.main()
+
+
+
+if __name__ == "__main__":
+    from unittest.mock import patch
     unittest.main()

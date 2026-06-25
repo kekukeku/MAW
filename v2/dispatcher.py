@@ -13,6 +13,10 @@ class DispatchResult:
     error: Optional[str] = None
     output: Optional[str] = None
     duration_seconds: float = 0.0
+    invocation_id: Optional[str] = None
+    is_async: bool = False
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -293,11 +297,272 @@ class MockAdapter(Adapter):
 
 
 # ---------------------------------------------------------------------------
+# Antigravity adapter helper & class
+# ---------------------------------------------------------------------------
+
+def discover_antigravity_credentials() -> dict[str, Optional[str]]:
+    import os
+    import re
+    import subprocess
+    import json
+
+    address = os.environ.get("ANTIGRAVITY_LS_ADDRESS")
+    csrf_token = os.environ.get("ANTIGRAVITY_CSRF_TOKEN")
+    project_id = os.environ.get("ANTIGRAVITY_PROJECT_ID")
+
+    # If already fully configured in environment, return it
+    if address and csrf_token and project_id:
+        return {
+            "address": address,
+            "csrf_token": csrf_token,
+            "project_id": project_id
+        }
+
+    # Discover CSRF token from running language_server process
+    discovered_csrf = None
+    discovered_ports = []
+    try:
+        ps_output = subprocess.check_output(["ps", "aux"], text=True)
+        ls_pids = []
+        for line in ps_output.splitlines():
+            if "language_server" in line and "--csrf_token" in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    pid = parts[1]
+                    ls_pids.append(pid)
+                match = re.search(r"--csrf_token\s+([a-zA-Z0-9\-]+)", line)
+                if match:
+                    discovered_csrf = match.group(1)
+
+        # For found PIDs, run lsof to get listening ports
+        for pid in ls_pids:
+            try:
+                lsof_output = subprocess.check_output(["lsof", "-a", "-i", "-P", "-n", "-p", pid], text=True)
+                for line in lsof_output.splitlines():
+                    if "LISTEN" in line:
+                        match = re.search(r"127\.0\.0\.1:(\d+)", line)
+                        if match:
+                            discovered_ports.append(int(match.group(1)))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Discover Project ID from app_storage.json
+    discovered_project_id = None
+    app_storage_path = os.path.expanduser("~/Library/Application Support/Antigravity/app_storage.json")
+    if os.path.isfile(app_storage_path):
+        try:
+            with open(app_storage_path, "r", encoding="utf-8") as f:
+                storage = json.load(f)
+                discovered_project_id = storage.get("lastCreatedProjectId")
+        except Exception:
+            pass
+
+    # Sort ports to prioritize higher port
+    discovered_ports.sort(reverse=True)
+
+    final_address = address
+    if not final_address and discovered_ports:
+        agentapi_path = os.path.expanduser("~/.gemini/antigravity/bin/agentapi")
+        if os.path.isfile(agentapi_path):
+            for p in discovered_ports:
+                test_addr = f"localhost:{p}"
+                test_env = os.environ.copy()
+                test_env["ANTIGRAVITY_LS_ADDRESS"] = test_addr
+                test_env["ANTIGRAVITY_CSRF_TOKEN"] = csrf_token or discovered_csrf or ""
+                test_env["ANTIGRAVITY_PROJECT_ID"] = project_id or discovered_project_id or ""
+                try:
+                    res = subprocess.run(
+                        [agentapi_path, "get-conversation-metadata", "00000000-0000-0000-0000-000000000000"],
+                        env=test_env,
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    try:
+                        out_json = json.loads(res.stdout)
+                        err_msg = out_json.get("error", "")
+                        if "trajectory not found" in err_msg or ("rpc error" in err_msg and "Unavailable" not in err_msg and "connection error" not in err_msg):
+                            final_address = test_addr
+                            break
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+    return {
+        "address": final_address,
+        "csrf_token": csrf_token or discovered_csrf,
+        "project_id": project_id or discovered_project_id
+    }
+
+
+class AntigravityAdapter(Adapter):
+    """Adapter for triggering the real Antigravity agent via agentapi."""
+
+    agent_id = "antigravity"
+
+    def invoke(
+        self,
+        role: str,
+        seat: str,
+        target_path: str,
+        instruction: str,
+        expected_output: str,
+        timeout: int = 600,
+    ) -> DispatchResult:
+        import json
+        import os
+        import subprocess
+        start_time = time.monotonic()
+        expected_path = Path(expected_output)
+
+        # If the artifact is already completed, return immediately
+        if expected_path.is_file() and expected_path.stat().st_size > 0:
+            tmp_path = expected_path.with_suffix(expected_path.suffix + ".tmp")
+            if not tmp_path.is_file():
+                # Clean up invocation file if exists
+                invocation_file = expected_path.with_suffix(expected_path.suffix + ".invocation")
+                if invocation_file.is_file():
+                    try:
+                        invocation_file.unlink()
+                    except Exception:
+                        pass
+                return DispatchResult(
+                    success=True,
+                    output="Artifact already exists",
+                    duration_seconds=0.0,
+                    invocation_id="manual",
+                    is_async=False
+                )
+
+        # Resolve the workflow directory by searching upwards for manifest.json
+        wf_dir = expected_path.parent
+        while wf_dir != wf_dir.parent:
+            if (wf_dir / "manifest.json").is_file():
+                break
+            wf_dir = wf_dir.parent
+
+        instruction_file_path = wf_dir / "instructions" / f"{seat}.md"
+
+        # We store the invocation conversation ID in expected_output + ".invocation"
+        invocation_file = expected_path.with_suffix(expected_path.suffix + ".invocation")
+        conversation_id = None
+        is_manual = False
+
+        if invocation_file.is_file():
+            try:
+                state = json.loads(invocation_file.read_text(encoding="utf-8"))
+                conversation_id = state.get("conversation_id")
+                is_manual = state.get("manual_handoff", False)
+                print(f"[antigravity] Found existing conversation ID: {conversation_id} (manual={is_manual}) from {invocation_file.name}")
+            except Exception as e:
+                print(f"[antigravity] Error reading invocation file: {e}")
+
+        # Resolve the agentapi binary path.
+        agentapi_path = os.path.expanduser("~/.gemini/antigravity/bin/agentapi")
+
+        if not conversation_id and not is_manual:
+            if not os.path.isfile(agentapi_path):
+                print(f"[antigravity] agentapi binary not found at {agentapi_path}. Falling back to MANUAL HANDOFF.")
+                is_manual = True
+            else:
+                credentials = discover_antigravity_credentials()
+
+                if not credentials.get("address") or not credentials.get("csrf_token"):
+                    print("[antigravity] Could not auto-discover address or CSRF token. Falling back to MANUAL HANDOFF.")
+                    is_manual = True
+                else:
+                    prompt = (
+                        f"You are dispatched as {role} ({seat}) in a MAW v2 workflow.\n"
+                        f"Please read the instructions in the following file:\n"
+                        f"{instruction_file_path}\n\n"
+                        f"And implement the task, then write your output to the expected path:\n"
+                        f"{expected_output}\n\n"
+                        f"Remember to write your output atomically (to a .tmp file first, then rename it).\n"
+                        f"Do not modify any code in the target project unless you are the executor."
+                    )
+
+                    print(f"[antigravity] Triggering agentapi new-conversation...")
+                    try:
+                        env = {
+                            "ANTIGRAVITY_LS_ADDRESS": credentials["address"] or "",
+                            "ANTIGRAVITY_CSRF_TOKEN": credentials["csrf_token"] or "",
+                            "ANTIGRAVITY_PROJECT_ID": credentials["project_id"] or "",
+                        }
+                        for k in ["PATH", "HOME", "USER", "SHELL", "TMPDIR"]:
+                            if k in os.environ:
+                                env[k] = os.environ[k]
+
+                        result = subprocess.run(
+                            [agentapi_path, "new-conversation", prompt],
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+
+                        if result.returncode != 0:
+                            print(f"[antigravity] agentapi failed: {result.stderr or result.stdout}. Falling back to MANUAL HANDOFF.")
+                            is_manual = True
+                        else:
+                            resp = json.loads(result.stdout)
+                            conversation_id = resp["response"]["newConversation"]["conversationId"]
+                            print(f"[antigravity] Started new conversation: {conversation_id}")
+
+                            # Persist the conversation ID
+                            invocation_file.parent.mkdir(parents=True, exist_ok=True)
+                            invocation_file.write_text(json.dumps({
+                                "conversation_id": conversation_id,
+                                "role": role,
+                                "seat": seat,
+                                "expected_output": expected_output,
+                                "started_at": time.time(),
+                                "manual_handoff": False
+                            }, indent=2), encoding="utf-8")
+                    except Exception as e:
+                        print(f"[antigravity] Exception when running agentapi: {e}. Falling back to MANUAL HANDOFF.")
+                        is_manual = True
+
+            if is_manual:
+                invocation_file.parent.mkdir(parents=True, exist_ok=True)
+                invocation_file.write_text(json.dumps({
+                    "conversation_id": "manual",
+                    "role": role,
+                    "seat": seat,
+                    "expected_output": expected_output,
+                    "started_at": time.time(),
+                    "manual_handoff": True
+                }, indent=2), encoding="utf-8")
+
+        if is_manual or conversation_id == "manual":
+            print("=" * 80)
+            print("[ANTIGRAVITY MANUAL HANDOFF REQUIRED]")
+            print(f"Please open Antigravity and execute the instruction:")
+            print(f"Instruction file: {instruction_file_path}")
+            print(f"Expected output:   {expected_output}")
+            print("=" * 80)
+
+        # Return immediately in async mode
+        duration = time.monotonic() - start_time
+        return DispatchResult(
+            success=True,
+            output=f"Agent dispatched successfully. Mode: {'Manual' if is_manual else 'Antigravity'}",
+            duration_seconds=duration,
+            invocation_id=conversation_id or "manual",
+            is_async=True
+        )
+
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
 _registry: dict[str, Adapter] = {
     "mock": MockAdapter(),
+    "antigravity": AntigravityAdapter(),
 }
 
 
