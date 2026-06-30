@@ -1,4 +1,20 @@
 #!/bin/bash
-# Start MAW Autonomous Workflow Engine
-echo "Starting MAW on http://127.0.0.1:8002 ..."
-uv run python -m uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+# Start MAW v2 — File-driven multi-agent workflow coordinator
+cd "$(dirname "$0")"
+
+if [ -f .env ]; then
+    set -a
+    . ./.env
+    set +a
+fi
+
+uv run python -m v2.app --help
+
+if [ -n "$TARGET_PROJECT_PATH" ]; then
+    echo ""
+    echo "Starting watcher for target: $TARGET_PROJECT_PATH"
+    exec uv run python -m v2.app watch --target "$TARGET_PROJECT_PATH"
+else
+    echo ""
+    echo "Set TARGET_PROJECT_PATH in .env or pass --target explicitly to watch a project."
+fi

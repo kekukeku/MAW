@@ -3,7 +3,7 @@ cd "$(dirname "$0")"
 command -v uv >/dev/null || { echo "請先安裝 uv: https://docs.astral.sh/uv/"; exit 1; }
 chmod +x MAW.command install.command 2>/dev/null || true
 
-# 針對 macOS 系統，自動編譯並設定美美的 Finder 圖示
+# macOS Finder icon setup
 if [[ "$OSTYPE" == "darwin"* ]] && command -v clang >/dev/null; then
     mkdir -p .tmp_build
     clang -framework AppKit -framework Foundation -o .tmp_build/seticon -x objective-c - <<'EOF' 2>/dev/null
@@ -27,5 +27,4 @@ fi
 
 uv sync
 [ -f .env ] || cp .env.example .env
-mkdir -p ~/.agent-cowork
 exec ./MAW.command
